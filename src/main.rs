@@ -3,89 +3,28 @@ mod entry;
 mod database;
 
 use entry::*;
-use std::{collections::HashMap, path::{Path, PathBuf}, time::{Duration, SystemTime}};
+use std::{collections::{HashMap, HashSet}, path::{Path, PathBuf}, sync::LazyLock, time::Duration};
 use clap::Parser;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use configparser::ini::Ini as IniParser;
 use filt_rs::Filter;
 
-// TODO how to do favorites
-// TODO what format to use to store cached data
+/// Expands paths that start with `~/`
+fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
+    static HOME: LazyLock<PathBuf> = LazyLock::new(|| {
+        PathBuf::from(std::env::var("HOME")
+            .expect("cannot get HOME env var"))
+    });
 
-const SECTION: &str = "Desktop Entry";
-const SECTION_ACTION: &str = "Desktop Action";
-
-pub fn entry_from_parser(parser: &IniParser, id: &str, lang: Option<&str>) -> Result<Option<Entry>, String> {
-    fn get_lang(parser: &IniParser, section: &str, key: &str, lang: &str) -> Option<String> {
-        parser.get(section, &format!("{key}{lang}"))
-            .or(parser.get(section, "{key}"))
+    let p = path.as_ref();
+    if let Ok(path) = path.as_ref().strip_prefix("~") {
+        return HOME.join(path);
     }
 
-    // skip hidden entries
-    if let Ok(no_display) = parser.getbool(SECTION, "NoDisplay") && no_display.unwrap_or(false) {
-        return Ok(None);
-    }
-
-    // append language marker
-    let lang = if let Some(lang) = lang {
-        format!("[{}]", lang)
-    } else {
-        "".to_string()
-    };
-
-    let entry_type: EntryType = parser.get(SECTION, "Type")
-        .ok_or_else(|| "Type is required in desktop files".to_string())?
-        .parse()
-        .unwrap(); // EntryType parse cannot fail
-
-    // ignore other types
-    if entry_type == EntryType::Other {
-        return Ok(None);
-    }
-
-    let mut actions: Vec<Entry> = vec![];
-    if let Some(action_names) = parser.get(SECTION, "Actions") {
-        for name in action_names.split(';') {
-            let section = format!("{SECTION_ACTION} {}", name);
-            actions.push(Entry {
-                id: id.to_string(),
-                name: get_lang(parser, &section, "Name", &lang)
-                        .ok_or_else(|| "Name is required in actions".to_string())?,
-                exec: Some(parser.get(&section, "Exec").ok_or_else(|| "Exec is required in actions".to_string())?),
-                icon: parser.get(&section, "Icon"),
-
-                ..Default::default()
-            });
-        }
-    }
-
-    Ok(Some(Entry {
-        id: id.to_string(),
-        entry_type,
-        name: get_lang(parser, SECTION, "Name", &lang).ok_or_else(|| "Name is required in desktop files".to_string())?,
-        exec: parser.get(SECTION, "Exec"),
-        url: parser.get(SECTION, "URL"),
-        generic_name: get_lang(parser, SECTION, "GenericName", &lang),
-        comment: get_lang(parser, SECTION, "Comment", &lang),
-        terminal: parser.getbool(SECTION, "Terminal").ok().flatten().unwrap_or(false),
-        icon: parser.get(SECTION, "Icon"),
-        only_show_in: parser
-            .get(SECTION, "OnlyShowIn")
-            .map(|x| x.split(';')
-                        .map(|y| y.to_string())
-                        .collect())
-            .unwrap_or(vec![]),
-        categories: parser
-            .get(SECTION, "Categories")
-            .map(|x| x.split(';')
-                        .map(|y| y.to_string())
-                        .collect())
-            .unwrap_or(vec![]),
-        actions,
-    }))
+    p.to_path_buf()
 }
 
-fn find_entries() -> Result<Vec<Entry>> {
+fn find_entries(favorites: Option<&HashSet<String>>) -> Result<Vec<Entry>> {
     const DEFAULT_PATHS: &[&str] = &[
         "/usr/share/applications",
         "/usr/local/share/applications",
@@ -105,7 +44,6 @@ fn find_entries() -> Result<Vec<Entry>> {
 
     let mut collect = |root: &Path| {
         for entry in root.read_dir().unwrap().flatten() {
-            // TODO it is not checked whether the symlink points to a file!
             if let Ok(entry_type) = entry.file_type() && (entry_type.is_file() || entry_type.is_symlink()) {
                 // filter only desktop files
                 let file_name = entry.file_name();
@@ -118,7 +56,7 @@ fn find_entries() -> Result<Vec<Entry>> {
                     }
 
                     let entry_id = file_name.strip_suffix(".desktop").unwrap();
-                    let entry = match entry_from_parser(&parser, entry_id, None) {
+                    let entry = match Entry::from_parser(&parser, entry_id, None, favorites) {
                         Ok(None) => continue, // entry that is not invalid but should be skipped
                         Ok(Some(x)) => x,
                         Err(err) => {
@@ -137,7 +75,7 @@ fn find_entries() -> Result<Vec<Entry>> {
     };
 
     for path in DEFAULT_PATHS {
-        let path = PathBuf::from(path);
+        let path = expand_tilde(PathBuf::from(path));
 
         if path.try_exists().unwrap_or(false) {
             collect(&path);
@@ -147,7 +85,7 @@ fn find_entries() -> Result<Vec<Entry>> {
     // support dynamic directories from the env var
     if let Ok(xdg_data_dirs) = std::env::var("XDG_DATA_DIRS") {
         for path in xdg_data_dirs.split(':') {
-            let path = PathBuf::from(path).join("applications");
+            let path = expand_tilde(PathBuf::from(path).join("applications"));
 
             if path.try_exists().unwrap_or(false) {
                 collect(&path);
@@ -173,43 +111,54 @@ fn find_entries() -> Result<Vec<Entry>> {
 }
 
 /// Gets the cached entries if they are recent enough otherwise find them
-fn get_entries(use_cache: bool) -> Result<Vec<Entry>> {
+fn get_entries(cache_path: Option<&Path>) -> Result<Vec<Entry>> {
     use database::Database;
 
-    // TODO path to database
-    if use_cache && let Ok(db) = Database::read(Path::new("./db.json")) {
+    if let Some(path) = cache_path && let Ok(db) = Database::read(path) {
+        // TODO what should be the time before a caching is needed?
         // if the timestamp is not older than 2 hours then just use it
         if db.timestamp.elapsed().ok().and_then(|x| Some(x < Duration::from_hours(2))).unwrap_or(true) {
             return Ok(db.entries);
         }
+
+        // TODO get and pass favorites!
+        let entries = find_entries(None)?;
+
+        // save entries in database
+        Database::update(path, entries.clone())?;
+
+        Ok(entries)
+    } else {
+        Ok(find_entries(None)?)
     }
-
-    // find entries
-    let entries = find_entries()?;
-
-    // save entries in database
-    if use_cache {
-        Database::update(Path::new("./db.json"), entries.clone())?;
-    }
-
-    Ok(entries)
 }
 
 fn main() -> anyhow::Result<()> {
+    // TODO check if called in rofi script mode and default to rofi subcommand
+
     let mut cli_args = cli::Cli::parse();
     let cmd = std::mem::replace(&mut cli_args.cmd, cli::CliCommands::None);
 
+    // expand home (tilde) in paths
+    cli_args.cache_path = expand_tilde(cli_args.cache_path);
+    cli_args.favorites = expand_tilde(cli_args.favorites);
+
     match cmd {
-        cli::CliCommands::List => todo!(),
-        cli::CliCommands::Query(args) => {
+        cli::CliCommands::List(args) => {
             let query = args.query.join(" ");
+            let query = query.trim();
 
-            let entries = get_entries(cli_args.cache)?;
-            let filter = Filter::new(&query)
-                .with_context(|| anyhow!("invalid query {:?}", query))?;
+            let entries = get_entries(if cli_args.cache {
+                Some(&cli_args.cache_path)
+            } else {
+                None
+            })?;
 
-            for entry in &entries {
-                if filter.matches(entry)? {
+            // TODO pretty print only if output is interactive terminal
+            // TODO make this less repeatitive and ugly
+            // if there is no query just print
+            if query.is_empty() {
+                for entry in &entries {
                     match args.format {
                         cli::OutputFormat::Debug => {
                             println!("{entry:#?}");
@@ -219,8 +168,26 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+            } else {
+                let filter = Filter::new(query)
+                    .with_context(|| anyhow!("invalid query {:?}", query))?;
+
+                for entry in &entries {
+                    if args.query.len() > 0 && filter.matches(entry)? {
+                        match args.format {
+                            cli::OutputFormat::Debug => {
+                                println!("{entry:#?}");
+                            },
+                            cli::OutputFormat::JSON => {
+                                println!("{}", serde_json::to_string_pretty(entry)?);
+                            }
+                        }
+                    }
+                }
             }
+
         },
+        cli::CliCommands::Rofi => todo!(),
         cli::CliCommands::None => unreachable!(),
     }
 

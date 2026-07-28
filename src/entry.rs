@@ -1,7 +1,10 @@
-use std::{fmt::Display, hash::Hash, str::FromStr};
-
+use std::{collections::HashSet, fmt::Display, hash::Hash, str::FromStr};
+use configparser::ini::Ini as IniParser;
 use filt_rs::{FilterValue, Filterable};
 use serde::{Deserialize, Serialize};
+
+const SECTION: &str = "Desktop Entry";
+const SECTION_ACTION: &str = "Desktop Action";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EntryType {
@@ -43,7 +46,6 @@ impl FromStr for EntryType {
     }
 }
 
-// TODO TryExec and spec Version key
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub id: String,
@@ -60,6 +62,9 @@ pub struct Entry {
     pub exec: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub try_exec: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -68,12 +73,19 @@ pub struct Entry {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub terminal: bool,
 
+    // TODO add absolute path to icon for programs that need it
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub only_show_in: Vec<String>,
 
+    // these properties are not a part of XDG spec
+    /// Is the entry favorited
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub favorite: bool,
+
+    /// Actions of the entry
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Self>,
 }
@@ -85,6 +97,78 @@ impl Entry {
         entries.push(self);
         entries
     }
+
+    pub fn from_parser(parser: &IniParser, id: &str, lang: Option<&str>, favorites: Option<&HashSet<String>>) -> Result<Option<Self>, String> {
+        fn get_lang(parser: &IniParser, section: &str, key: &str, lang: &str) -> Option<String> {
+            parser.get(section, &format!("{key}{lang}"))
+                .or(parser.get(section, "{key}"))
+        }
+
+        // skip hidden entries
+        if let Ok(no_display) = parser.getbool(SECTION, "NoDisplay") && no_display.unwrap_or(false) {
+            return Ok(None);
+        }
+
+        // append language marker
+        let lang = if let Some(lang) = lang {
+            format!("[{}]", lang)
+        } else {
+            "".to_string()
+        };
+
+        let entry_type: EntryType = parser.get(SECTION, "Type")
+            .ok_or_else(|| "Type is required in desktop files".to_string())?
+            .parse()
+            .unwrap(); // EntryType parse cannot fail
+
+        // ignore other types
+        if entry_type == EntryType::Other {
+            return Ok(None);
+        }
+
+        let mut actions: Vec<Self> = vec![];
+        if let Some(action_names) = parser.get(SECTION, "Actions") {
+            for name in action_names.split(';') {
+                let section = format!("{SECTION_ACTION} {}", name);
+                actions.push(Self {
+                    id: id.to_string(),
+                    name: get_lang(parser, &section, "Name", &lang)
+                            .ok_or_else(|| "Name is required in actions".to_string())?,
+                    exec: Some(parser.get(&section, "Exec").ok_or_else(|| "Exec is required in actions".to_string())?),
+                    icon: parser.get(&section, "Icon"),
+
+                    ..Default::default()
+                });
+            }
+        }
+
+        Ok(Some(Self {
+            id: id.to_string(),
+            entry_type,
+            name: get_lang(parser, SECTION, "Name", &lang).ok_or_else(|| "Name is required in desktop files".to_string())?,
+            exec: parser.get(SECTION, "Exec"),
+            try_exec: parser.get(SECTION, "TryExec"),
+            url: parser.get(SECTION, "URL"),
+            generic_name: get_lang(parser, SECTION, "GenericName", &lang),
+            comment: get_lang(parser, SECTION, "Comment", &lang),
+            terminal: parser.getbool(SECTION, "Terminal").ok().flatten().unwrap_or(false),
+            icon: parser.get(SECTION, "Icon"),
+            only_show_in: parser
+                .get(SECTION, "OnlyShowIn")
+                .map(|x| x.split(';')
+                            .map(|y| y.to_string())
+                            .collect())
+                .unwrap_or(vec![]),
+            categories: parser
+                .get(SECTION, "Categories")
+                .map(|x| x.split(';')
+                            .map(|y| y.to_string())
+                            .collect())
+                .unwrap_or(vec![]),
+            favorite: favorites.map(|x| x.contains(id)).unwrap_or(false),
+            actions,
+        }))
+    }
 }
 
 impl Default for Entry {
@@ -94,6 +178,7 @@ impl Default for Entry {
             entry_type: EntryType::Application,
             name: "".to_string(),
             exec: None,
+            try_exec: None,
             url: None,
             generic_name: None,
             comment: None,
@@ -101,6 +186,7 @@ impl Default for Entry {
             icon: None,
             only_show_in: vec![],
             categories: vec![],
+            favorite: false,
             actions: vec![],
         }
     }
@@ -113,11 +199,13 @@ impl Filterable for Entry {
             "entry.name" => self.name.as_str().into(),
             "entry.generic_name" => self.generic_name.as_ref().map(|x| x.as_str()).into(),
             "entry.exec" => self.exec.as_ref().map(|x| x.as_str()).into(),
+            "entry.try_exec" => self.try_exec.as_ref().map(|x| x.as_str()).into(),
             "entry.comment" => self.comment.as_ref().map(|x| x.as_str()).into(),
             "entry.categories" => FilterValue::Tuple(self.categories.iter().map(|x| Into::<FilterValue>::into(x.as_str())).collect()),
             "entry.terminal" => self.terminal.into(),
             "entry.icon" => self.icon.as_ref().map(|x| x.as_str()).into(),
             "entry.only_show_in" => FilterValue::Tuple(self.only_show_in.iter().map(|x| Into::<FilterValue>::into(x.as_str())).collect()),
+            "entry.favorite" => self.favorite.into(),
             _ => FilterValue::Null,
         }
     }

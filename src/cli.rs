@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 /// XDG Desktop compliant indexer
@@ -7,6 +8,16 @@ pub struct Cli {
     /// Do not use cache
     #[arg(long = "no-cache", action = clap::ArgAction::SetFalse, default_value_t = true)]
     pub cache: bool,
+
+    /// Where to store cache of desktop entries
+    #[arg(long, default_value = "~/.cache/sdlt.json")]
+    pub cache_path: PathBuf,
+
+    /// Path to file where favorites are stored
+    ///
+    /// One entry id per line!
+    #[arg(long = "favorites", default_value = "~/.config/sdlt-favorites.txt")]
+    pub favorites: PathBuf,
 
     #[command(subcommand)]
     pub cmd: CliCommands,
@@ -20,29 +31,26 @@ pub enum OutputFormat {
     JSON,
 }
 
+// TODO add examples for queries
 #[derive(Args, Debug, Clone)]
-pub struct CmdQuery {
+pub struct CmdList {
     #[arg(short, long, default_value = "debug")]
     pub format: OutputFormat,
 
-    /// Query
+    /// Filter the entries based on their properties using a DSL
     ///
     /// For syntax help read: https://docs.rs/filt-rs/
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = false)]
     pub query: Vec<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CliCommands {
-    // TODO make it the default command so its easier to use but detect env var so stdout is not
-    // filled with stuff
-    // Rofi,
-
-    // TODO add option for query with rest=true
-    List,
+    /// Meant to be used in rofi script mode
+    Rofi,
 
     /// Query entries
-    Query(CmdQuery),
+    List(CmdList),
 
     #[clap(skip)]
     None,
