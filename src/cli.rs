@@ -13,10 +13,8 @@ pub struct Cli {
     #[arg(long, default_value = "~/.cache/sdlt.json")]
     pub cache_path: PathBuf,
 
-    /// Path to file where favorites are stored
-    ///
-    /// One entry id per line!
-    #[arg(long = "favorites", default_value = "~/.config/sdlt-favorites.txt")]
+    /// Path to file where favorites are stored (JSON array)
+    #[arg(long = "favorites", default_value = "~/.config/sdlt-favorites.json")]
     pub favorites: PathBuf,
 
     #[command(subcommand)]

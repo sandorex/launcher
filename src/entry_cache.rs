@@ -3,7 +3,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Database {
+pub struct EntryCache {
     /// Time of last update
     pub timestamp: SystemTime,
 
@@ -11,8 +11,8 @@ pub struct Database {
     pub entries: Vec<crate::Entry>,
 }
 
-impl Database {
-    /// Read the database from path
+impl EntryCache {
+    /// Read the cache from path
     pub fn read(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| anyhow!("could not read {path:?}"))?;
@@ -21,7 +21,7 @@ impl Database {
             .with_context(|| anyhow!("could not parse json in {path:?}"))
     }
 
-    /// Save database to path atomically
+    /// Save cache to path atomically
     pub fn save(&self, path: &Path) -> Result<()> {
         let contents = serde_json::to_string(self)
             .with_context(|| anyhow!("failed to serialize {self:?}"))?;

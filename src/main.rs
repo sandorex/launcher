@@ -1,6 +1,7 @@
 mod cli;
 mod entry;
-mod database;
+mod entry_cache;
+mod favorites;
 
 use entry::*;
 use std::{collections::{HashMap, HashSet}, path::{Path, PathBuf}, sync::LazyLock, time::Duration};
@@ -55,6 +56,7 @@ fn find_entries(favorites: Option<&HashSet<String>>) -> Result<Vec<Entry>> {
                         Err(err) => errors.push(format!("Failed to parse ini {:?}: {err}", &entry.path())),
                     }
 
+                    // TODO langauge
                     let entry_id = file_name.strip_suffix(".desktop").unwrap();
                     let entry = match Entry::from_parser(&parser, entry_id, None, favorites) {
                         Ok(None) => continue, // entry that is not invalid but should be skipped
@@ -111,25 +113,30 @@ fn find_entries(favorites: Option<&HashSet<String>>) -> Result<Vec<Entry>> {
 }
 
 /// Gets the cached entries if they are recent enough otherwise find them
-fn get_entries(cache_path: Option<&Path>) -> Result<Vec<Entry>> {
-    use database::Database;
+fn get_entries(cache_path: Option<&Path>, favorites_path: &Path) -> Result<Vec<Entry>> {
+    use entry_cache::EntryCache;
+    use favorites::Favorites;
 
-    if let Some(path) = cache_path && let Ok(db) = Database::read(path) {
+    // convert it into a hash set for speed
+    let favorites = Favorites::read(favorites_path)
+        .map(|x| HashSet::from_iter(x.0.into_iter()))
+        .ok();
+
+    if let Some(path) = cache_path && let Ok(db) = EntryCache::read(path) {
         // TODO what should be the time before a caching is needed?
         // if the timestamp is not older than 2 hours then just use it
         if db.timestamp.elapsed().ok().and_then(|x| Some(x < Duration::from_hours(2))).unwrap_or(true) {
             return Ok(db.entries);
         }
 
-        // TODO get and pass favorites!
-        let entries = find_entries(None)?;
+        let entries = find_entries(favorites.as_ref())?;
 
         // save entries in database
-        Database::update(path, entries.clone())?;
+        EntryCache::update(path, entries.clone())?;
 
         Ok(entries)
     } else {
-        Ok(find_entries(None)?)
+        Ok(find_entries(favorites.as_ref())?)
     }
 }
 
@@ -148,11 +155,10 @@ fn main() -> anyhow::Result<()> {
             let query = args.query.join(" ");
             let query = query.trim();
 
-            let entries = get_entries(if cli_args.cache {
-                Some(&cli_args.cache_path)
-            } else {
-                None
-            })?;
+            let entries = get_entries(
+                if cli_args.cache { Some(&cli_args.cache_path) } else { None },
+                &cli_args.favorites,
+            )?;
 
             // TODO pretty print only if output is interactive terminal
             // TODO make this less repeatitive and ugly
