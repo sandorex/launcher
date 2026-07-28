@@ -6,19 +6,36 @@ use clap::{Args, Parser, Subcommand};
 #[command(author, version, about)]
 pub struct Cli {
     /// Do not use cache
-    #[arg(long = "no-cache", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    #[arg(long = "no-cache", action = clap::ArgAction::SetFalse, env = "SDLT_NO_CACHE", default_value_t = true, global = true)]
     pub cache: bool,
 
     /// Where to store cache of desktop entries
-    #[arg(long, default_value = "~/.cache/sdlt.json")]
-    pub cache_path: PathBuf,
+    #[arg(long, env = "SDLT_CACHE_FILE", default_value = "~/.cache/sdlt.json", global = true)]
+    pub cache_file: PathBuf,
 
     /// Path to file where favorites are stored (JSON array)
-    #[arg(long = "favorites", default_value = "~/.config/sdlt-favorites.json")]
-    pub favorites: PathBuf,
+    #[arg(long, env = "SDLT_FAVORITES_FILE", default_value = "~/.config/sdlt-favorites.json", global = true)]
+    pub favorites_file: PathBuf,
 
     #[command(subcommand)]
     pub cmd: CliCommands,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CmdRofi {
+    /// Contains code from rofi when running in script mode
+    #[arg(long, env = "ROFI_RETV", hide = true)]
+    pub rofi_status: Option<u8>,
+
+    /// Filter the entries based on their properties using a DSL
+    ///
+    /// For syntax help read: https://docs.rs/filt-rs/
+    #[arg(short, long)]
+    pub query: Option<String>,
+
+    // this is provided by rofi
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = false, hide = true)]
+    pub rest: Vec<String>,
 }
 
 /// Output format of data
@@ -35,6 +52,7 @@ pub struct CmdList {
     #[arg(short, long, default_value = "debug")]
     pub format: OutputFormat,
 
+    // TODO this could be a struct that is flattened everywhere so its not repeated
     /// Filter the entries based on their properties using a DSL
     ///
     /// For syntax help read: https://docs.rs/filt-rs/
@@ -44,8 +62,10 @@ pub struct CmdList {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CliCommands {
-    /// Meant to be used in rofi script mode
-    Rofi,
+    /// Used in rofi script mode
+    ///
+    /// Automatically called when called by rofi
+    Rofi(CmdRofi),
 
     /// Query entries
     List(CmdList),

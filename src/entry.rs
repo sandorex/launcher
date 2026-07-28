@@ -135,7 +135,10 @@ impl Entry {
                     name: get_lang(parser, &section, "Name", &lang)
                             .ok_or_else(|| "Name is required in actions".to_string())?,
                     exec: Some(parser.get(&section, "Exec").ok_or_else(|| "Exec is required in actions".to_string())?),
-                    icon: parser.get(&section, "Icon"),
+                    icon: parser.get(&section, "Icon")
+                            // fallback to application icon
+                            .or_else(|| parser.get(SECTION, "Icon")),
+                    favorite: favorites.map(|x| x.contains(id)).unwrap_or(false),
 
                     ..Default::default()
                 });

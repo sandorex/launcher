@@ -4,7 +4,7 @@ mod entry_cache;
 mod favorites;
 
 use entry::*;
-use std::{collections::{HashMap, HashSet}, path::{Path, PathBuf}, sync::LazyLock, time::Duration};
+use std::{collections::{HashMap, HashSet}, ffi::OsStr, path::{Path, PathBuf}, sync::LazyLock, time::Duration};
 use clap::Parser;
 use anyhow::{Context, Result, anyhow};
 use configparser::ini::Ini as IniParser;
@@ -25,7 +25,7 @@ fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
     p.to_path_buf()
 }
 
-fn find_entries(favorites: Option<&HashSet<String>>) -> Result<Vec<Entry>> {
+fn find_entries(favorites: Option<&HashSet<String>>, split_actions: bool) -> Result<Vec<Entry>> {
     const DEFAULT_PATHS: &[&str] = &[
         "/usr/share/applications",
         "/usr/local/share/applications",
@@ -104,16 +104,20 @@ fn find_entries(favorites: Option<&HashSet<String>>) -> Result<Vec<Entry>> {
     }
 
     // split entries that have actions so each action is its own entry
-    let entries: Vec<Entry> = entries
-        .into_values()
-        .flat_map(|x| x.split_actions().into_iter())
-        .collect();
-
-    Ok(entries)
+    Ok(if split_actions {
+        entries
+            .into_values()
+            .flat_map(|x| x.split_actions().into_iter())
+            .collect()
+    } else {
+        entries
+            .into_values()
+            .collect()
+    })
 }
 
 /// Gets the cached entries if they are recent enough otherwise find them
-fn get_entries(cache_path: Option<&Path>, favorites_path: &Path) -> Result<Vec<Entry>> {
+fn get_entries(cache_path: Option<&Path>, favorites_path: &Path, split_actions: bool) -> Result<Vec<Entry>> {
     use entry_cache::EntryCache;
     use favorites::Favorites;
 
@@ -129,36 +133,93 @@ fn get_entries(cache_path: Option<&Path>, favorites_path: &Path) -> Result<Vec<E
             return Ok(db.entries);
         }
 
-        let entries = find_entries(favorites.as_ref())?;
+        let entries = find_entries(favorites.as_ref(), split_actions)?;
 
         // save entries in database
         EntryCache::update(path, entries.clone())?;
 
         Ok(entries)
     } else {
-        Ok(find_entries(favorites.as_ref())?)
+        Ok(find_entries(favorites.as_ref(), split_actions)?)
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    // TODO check if called in rofi script mode and default to rofi subcommand
+    let mut cli_args = if std::env::var("ROFI_RETV").is_ok() {
+        let mut args: Vec<String> = std::env::args().collect();
 
-    let mut cli_args = cli::Cli::parse();
+        // set the command
+        args.insert(1, "rofi".to_string());
+
+        cli::Cli::parse_from(args)
+    } else {
+        cli::Cli::parse()
+    };
+
     let cmd = std::mem::replace(&mut cli_args.cmd, cli::CliCommands::None);
 
     // expand home (tilde) in paths
-    cli_args.cache_path = expand_tilde(cli_args.cache_path);
-    cli_args.favorites = expand_tilde(cli_args.favorites);
+    cli_args.cache_file = expand_tilde(cli_args.cache_file);
+    cli_args.favorites_file = expand_tilde(cli_args.favorites_file);
+
+    let cache_file = if cli_args.cache { Some(cli_args.cache_file.as_path()) } else { None };
 
     match cmd {
+        cli::CliCommands::Rofi(args) => {
+            if args.rofi_status.is_none() {
+                eprintln!("Error not running in rofi script mode\n\nRead more with `man 5 rofi-script`");
+                return Ok(());
+            }
+
+            // TODO convert entries to rofi syntax
+
+            match args.rofi_status.unwrap() {
+                // initial call
+                0 => {
+                    // disable custom input
+                    println!("\0no-custom\x1ftrue");
+
+                    let entries = get_entries(cache_file, &cli_args.favorites_file, false)?;
+
+                    // TODO filter with the query if set
+                    // TODO maybe use custom keybindings to trigger application actions?
+                    for entry in &entries {
+                        // TODO generic placeholder icon if its missing?
+                        // TODO only print options if there is any data
+                        println!(
+                            "{}\0icon\x1f{}\x1fmeta\x1f{}",
+                            entry.name,
+                            entry.icon.as_ref().map(|x| x.as_str()).unwrap_or(""),
+
+                            // TODO i just added all the info but do categories fit here at all?
+                            format!("{} {} {}",
+                                entry.generic_name.as_ref().map(|x| x.as_str()).unwrap_or(""),
+                                entry.comment.as_ref().map(|x| x.as_str()).unwrap_or(""),
+                                entry.categories.join(" "),
+                            ),
+                        );
+                    }
+                },
+
+                // TODO calling the actuall application with wrappers like systemd-cat or swaymsg
+                // selected an entry
+                1 => {
+                    println!("got {:#?}", args.rest);
+                },
+                // 2          selected a custom entry
+                // 3          deleted an entry
+                // 10 - 28    custom keybindings
+                val => {
+                    return Err(anyhow!("invalid ROFI_RETV value {val:?}"));
+                },
+            };
+        },
         cli::CliCommands::List(args) => {
             let query = args.query.join(" ");
             let query = query.trim();
 
-            let entries = get_entries(
-                if cli_args.cache { Some(&cli_args.cache_path) } else { None },
-                &cli_args.favorites,
-            )?;
+            // list actions as separate entries
+            let entries = get_entries(cache_file, &cli_args.favorites_file, true)?;
 
             // TODO pretty print only if output is interactive terminal
             // TODO make this less repeatitive and ugly
@@ -193,7 +254,6 @@ fn main() -> anyhow::Result<()> {
             }
 
         },
-        cli::CliCommands::Rofi => todo!(),
         cli::CliCommands::None => unreachable!(),
     }
 
