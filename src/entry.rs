@@ -1,8 +1,9 @@
 use std::{fmt::Display, hash::Hash, str::FromStr};
 
 use filt_rs::{FilterValue, Filterable};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EntryType {
     /// Application desktop file
     Application,
@@ -43,21 +44,37 @@ impl FromStr for EntryType {
 }
 
 // TODO TryExec and spec Version key
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub id: String,
     pub entry_type: EntryType,
     pub name: String,
-    pub generic_name: Option<String>,
-    pub comment: Option<String>,
-    pub exec: Option<String>,
-    pub url: Option<String>,
-    pub categories: Vec<String>,
-    pub terminal: bool,
-    pub no_display: bool,
-    pub icon: Option<String>,
-    pub only_show_in: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generic_name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exec: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub only_show_in: Vec<String>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Self>,
 }
 
@@ -81,9 +98,8 @@ impl Default for Entry {
             generic_name: None,
             comment: None,
             terminal: false,
-            no_display: false,
             icon: None,
-            only_show_in: None,
+            only_show_in: vec![],
             categories: vec![],
             actions: vec![],
         }
@@ -94,16 +110,14 @@ impl Filterable for Entry {
     fn get(&self, key: &str) -> FilterValue<'_> {
         match key {
             "entry.type" => format!("{}", self.entry_type).into(),
-            "entry.name" => self.name.clone().into(),
-            "entry.generic_name" => self.generic_name.clone().into(),
-            "entry.exec" => self.exec.clone().into(),
-            "entry.comment" => self.comment.clone().into(),
+            "entry.name" => self.name.as_str().into(),
+            "entry.generic_name" => self.generic_name.as_ref().map(|x| x.as_str()).into(),
+            "entry.exec" => self.exec.as_ref().map(|x| x.as_str()).into(),
+            "entry.comment" => self.comment.as_ref().map(|x| x.as_str()).into(),
             "entry.categories" => FilterValue::Tuple(self.categories.iter().map(|x| Into::<FilterValue>::into(x.as_str())).collect()),
-            "entry.terminal" => self.terminal.clone().into(),
-            "entry.no_display" => self.no_display.clone().into(),
-            "entry.icon" => self.icon.clone().into(),
-            "entry.only_show_in" => self.only_show_in.clone().into(),
-
+            "entry.terminal" => self.terminal.into(),
+            "entry.icon" => self.icon.as_ref().map(|x| x.as_str()).into(),
+            "entry.only_show_in" => FilterValue::Tuple(self.only_show_in.iter().map(|x| Into::<FilterValue>::into(x.as_str())).collect()),
             _ => FilterValue::Null,
         }
     }

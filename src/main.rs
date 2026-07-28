@@ -1,12 +1,16 @@
 mod cli;
 mod entry;
+mod database;
 
 use entry::*;
-use std::{collections::HashMap, path::{Path, PathBuf}};
+use std::{collections::HashMap, path::{Path, PathBuf}, time::{Duration, SystemTime}};
 use clap::Parser;
 use anyhow::{Context, Result, anyhow, bail};
 use configparser::ini::Ini as IniParser;
 use filt_rs::Filter;
+
+// TODO how to do favorites
+// TODO what format to use to store cached data
 
 const SECTION: &str = "Desktop Entry";
 const SECTION_ACTION: &str = "Desktop Action";
@@ -15,6 +19,11 @@ pub fn entry_from_parser(parser: &IniParser, id: &str, lang: Option<&str>) -> Re
     fn get_lang(parser: &IniParser, section: &str, key: &str, lang: &str) -> Option<String> {
         parser.get(section, &format!("{key}{lang}"))
             .or(parser.get(section, "{key}"))
+    }
+
+    // skip hidden entries
+    if let Ok(no_display) = parser.getbool(SECTION, "NoDisplay") && no_display.unwrap_or(false) {
+        return Ok(None);
     }
 
     // append language marker
@@ -59,9 +68,13 @@ pub fn entry_from_parser(parser: &IniParser, id: &str, lang: Option<&str>) -> Re
         generic_name: get_lang(parser, SECTION, "GenericName", &lang),
         comment: get_lang(parser, SECTION, "Comment", &lang),
         terminal: parser.getbool(SECTION, "Terminal").ok().flatten().unwrap_or(false),
-        no_display: parser.getbool(SECTION, "NoDisplay").ok().flatten().unwrap_or(false),
         icon: parser.get(SECTION, "Icon"),
-        only_show_in: parser.get(SECTION, "OnlyShowIn"),
+        only_show_in: parser
+            .get(SECTION, "OnlyShowIn")
+            .map(|x| x.split(';')
+                        .map(|y| y.to_string())
+                        .collect())
+            .unwrap_or(vec![]),
         categories: parser
             .get(SECTION, "Categories")
             .map(|x| x.split(';')
@@ -159,21 +172,52 @@ fn find_entries() -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
+/// Gets the cached entries if they are recent enough otherwise find them
+fn get_entries(use_cache: bool) -> Result<Vec<Entry>> {
+    use database::Database;
+
+    // TODO path to database
+    if use_cache && let Ok(db) = Database::read(Path::new("./db.json")) {
+        // if the timestamp is not older than 2 hours then just use it
+        if db.timestamp.elapsed().ok().and_then(|x| Some(x < Duration::from_hours(2))).unwrap_or(true) {
+            return Ok(db.entries);
+        }
+    }
+
+    // find entries
+    let entries = find_entries()?;
+
+    // save entries in database
+    if use_cache {
+        Database::update(Path::new("./db.json"), entries.clone())?;
+    }
+
+    Ok(entries)
+}
+
 fn main() -> anyhow::Result<()> {
-    let mut args = cli::Cli::parse();
-    let cmd = std::mem::replace(&mut args.cmd, cli::CliCommands::None);
+    let mut cli_args = cli::Cli::parse();
+    let cmd = std::mem::replace(&mut cli_args.cmd, cli::CliCommands::None);
 
     match cmd {
         cli::CliCommands::List => todo!(),
-        cli::CliCommands::Test => {
-            // let e = Entry::default();
-            let entries = find_entries()?;
+        cli::CliCommands::Query(args) => {
+            let query = args.query.join(" ");
 
-            let filter = Filter::new("entry.show_in == \"Link\"")?;
+            let entries = get_entries(cli_args.cache)?;
+            let filter = Filter::new(&query)
+                .with_context(|| anyhow!("invalid query {:?}", query))?;
 
             for entry in &entries {
                 if filter.matches(entry)? {
-                    println!("{entry:#?}");
+                    match args.format {
+                        cli::OutputFormat::Debug => {
+                            println!("{entry:#?}");
+                        },
+                        cli::OutputFormat::JSON => {
+                            println!("{}", serde_json::to_string_pretty(entry)?);
+                        }
+                    }
                 }
             }
         },
