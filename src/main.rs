@@ -1,14 +1,16 @@
 mod cli;
 mod entry;
 mod entry_cache;
-mod favorites;
+mod config;
 
 use entry::*;
-use std::{collections::{HashMap, HashSet}, ffi::OsStr, path::{Path, PathBuf}, sync::LazyLock, time::Duration};
+use std::{collections::HashMap, io::IsTerminal, path::{Path, PathBuf}, sync::LazyLock, time::Duration};
 use clap::Parser;
 use anyhow::{Context, Result, anyhow};
 use configparser::ini::Ini as IniParser;
 use filt_rs::Filter;
+
+use crate::config::Config;
 
 /// Expands paths that start with `~/`
 fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
@@ -25,7 +27,8 @@ fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
     p.to_path_buf()
 }
 
-fn find_entries(favorites: Option<&HashSet<String>>, split_actions: bool) -> Result<Vec<Entry>> {
+// TODO should TryExec be tested here?
+fn find_entries(config: &Config, split_actions: bool) -> Result<Vec<Entry>> {
     const DEFAULT_PATHS: &[&str] = &[
         "/usr/share/applications",
         "/usr/local/share/applications",
@@ -58,7 +61,7 @@ fn find_entries(favorites: Option<&HashSet<String>>, split_actions: bool) -> Res
 
                     // TODO langauge
                     let entry_id = file_name.strip_suffix(".desktop").unwrap();
-                    let entry = match Entry::from_parser(&parser, entry_id, None, favorites) {
+                    let entry = match Entry::from_parser(&parser, entry_id, None, config) {
                         Ok(None) => continue, // entry that is not invalid but should be skipped
                         Ok(Some(x)) => x,
                         Err(err) => {
@@ -117,14 +120,8 @@ fn find_entries(favorites: Option<&HashSet<String>>, split_actions: bool) -> Res
 }
 
 /// Gets the cached entries if they are recent enough otherwise find them
-fn get_entries(cache_path: Option<&Path>, favorites_path: &Path, split_actions: bool) -> Result<Vec<Entry>> {
+fn get_entries(cache_path: Option<&Path>, config: &Config, split_actions: bool) -> Result<Vec<Entry>> {
     use entry_cache::EntryCache;
-    use favorites::Favorites;
-
-    // convert it into a hash set for speed
-    let favorites = Favorites::read(favorites_path)
-        .map(|x| HashSet::from_iter(x.0.into_iter()))
-        .ok();
 
     if let Some(path) = cache_path && let Ok(db) = EntryCache::read(path) {
         // TODO what should be the time before a caching is needed?
@@ -133,18 +130,19 @@ fn get_entries(cache_path: Option<&Path>, favorites_path: &Path, split_actions: 
             return Ok(db.entries);
         }
 
-        let entries = find_entries(favorites.as_ref(), split_actions)?;
+        let entries = find_entries(config, split_actions)?;
 
         // save entries in database
         EntryCache::update(path, entries.clone())?;
 
         Ok(entries)
     } else {
-        Ok(find_entries(favorites.as_ref(), split_actions)?)
+        Ok(find_entries(config, split_actions)?)
     }
 }
 
 fn main() -> anyhow::Result<()> {
+    // automatically run rofi subcommand if ran in rofi script mode
     let mut cli_args = if std::env::var("ROFI_RETV").is_ok() {
         let mut args: Vec<String> = std::env::args().collect();
 
@@ -160,9 +158,11 @@ fn main() -> anyhow::Result<()> {
 
     // expand home (tilde) in paths
     cli_args.cache_file = expand_tilde(cli_args.cache_file);
-    cli_args.favorites_file = expand_tilde(cli_args.favorites_file);
+    cli_args.config_file = expand_tilde(cli_args.config_file);
 
     let cache_file = if cli_args.cache { Some(cli_args.cache_file.as_path()) } else { None };
+
+    let get_config = || Config::read(&cli_args.config_file);
 
     match cmd {
         cli::CliCommands::Rofi(args) => {
@@ -171,15 +171,14 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            // TODO convert entries to rofi syntax
-
             match args.rofi_status.unwrap() {
                 // initial call
                 0 => {
                     // disable custom input
                     println!("\0no-custom\x1ftrue");
 
-                    let entries = get_entries(cache_file, &cli_args.favorites_file, false)?;
+                    let config = get_config()?;
+                    let entries = get_entries(cache_file, &config, false)?;
 
                     // TODO filter with the query if set
                     // TODO maybe use custom keybindings to trigger application actions?
@@ -219,21 +218,37 @@ fn main() -> anyhow::Result<()> {
             let query = query.trim();
 
             // list actions as separate entries
-            let entries = get_entries(cache_file, &cli_args.favorites_file, true)?;
+            let config = get_config()?;
+            let entries = get_entries(cache_file, &config, true)?;
 
-            // TODO pretty print only if output is interactive terminal
-            // TODO make this less repeatitive and ugly
+            // detect if output is interactive to output pretty formatted data
+            let is_terminal = std::io::stdout().is_terminal();
+
+            let custom_print = |entry: &Entry| -> Result<()> {
+                match args.format {
+                    cli::OutputFormat::Debug => {
+                        if is_terminal {
+                            println!("{entry:#?}");
+                        } else {
+                            println!("{entry:?}");
+                        }
+                    },
+                    cli::OutputFormat::JSON => {
+                        if is_terminal {
+                            println!("{}", serde_json::to_string_pretty(entry)?);
+                        } else {
+                            println!("{}", serde_json::to_string(entry)?);
+                        }
+                    }
+                }
+
+                Ok(())
+            };
+
             // if there is no query just print
             if query.is_empty() {
                 for entry in &entries {
-                    match args.format {
-                        cli::OutputFormat::Debug => {
-                            println!("{entry:#?}");
-                        },
-                        cli::OutputFormat::JSON => {
-                            println!("{}", serde_json::to_string_pretty(entry)?);
-                        }
-                    }
+                    custom_print(&entry)?;
                 }
             } else {
                 let filter = Filter::new(query)
@@ -241,14 +256,7 @@ fn main() -> anyhow::Result<()> {
 
                 for entry in &entries {
                     if args.query.len() > 0 && filter.matches(entry)? {
-                        match args.format {
-                            cli::OutputFormat::Debug => {
-                                println!("{entry:#?}");
-                            },
-                            cli::OutputFormat::JSON => {
-                                println!("{}", serde_json::to_string_pretty(entry)?);
-                            }
-                        }
+                        custom_print(&entry)?;
                     }
                 }
             }

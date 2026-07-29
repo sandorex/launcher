@@ -10,12 +10,12 @@ pub struct Cli {
     pub cache: bool,
 
     /// Where to store cache of desktop entries
-    #[arg(long, env = "SDLT_CACHE_FILE", default_value = "~/.cache/sdlt.json", global = true)]
+    #[arg(long, env = "SDLT_CACHE", default_value = "~/.cache/sdlt.json", global = true)]
     pub cache_file: PathBuf,
 
     /// Path to file where favorites are stored (JSON array)
-    #[arg(long, env = "SDLT_FAVORITES_FILE", default_value = "~/.config/sdlt-favorites.json", global = true)]
-    pub favorites_file: PathBuf,
+    #[arg(long, env = "SDLT_CONFIG", default_value = "~/.config/sdlt.json", global = true)]
+    pub config_file: PathBuf,
 
     #[command(subcommand)]
     pub cmd: CliCommands,
@@ -49,7 +49,7 @@ pub enum OutputFormat {
 // TODO add examples for queries
 #[derive(Args, Debug, Clone)]
 pub struct CmdList {
-    #[arg(short, long, default_value = "debug")]
+    #[arg(short, long, default_value = "json")]
     pub format: OutputFormat,
 
     // TODO this could be a struct that is flattened everywhere so its not repeated

@@ -1,20 +1,16 @@
-use std::{path::Path, time::SystemTime};
+use std::{collections::HashMap, path::Path};
+
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-// TODO this could be replaced by a database like sqlite, would probably improve performance
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EntryCache {
-    /// Time of last update
-    pub timestamp: SystemTime,
-
-    /// The desktop entries
-    pub entries: Vec<crate::Entry>,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Config {
+    // tags for each id
+    pub tags: HashMap<String, Vec<String>>,
 }
 
-impl EntryCache {
-    /// Read the cache from path
+impl Config {
+    /// Read the favorites from path or returns default if it does not exist
     pub fn read(path: &Path) -> Result<Self> {
         let contents = match std::fs::read_to_string(path) {
             Ok(x) => Ok(x),
@@ -28,13 +24,14 @@ impl EntryCache {
                     _ => Err(err),
                 }
             },
-        }.with_context(|| anyhow!("could not read cache at {path:?}"))?;
+        }.with_context(|| anyhow!("could not read config at {path:?}"))?;
 
         serde_json::from_str(&contents)
-            .with_context(|| anyhow!("could not parse json in {path:?}"))
+            .with_context(|| anyhow!("could not parse config at {path:?}"))
     }
 
     /// Save cache to path atomically
+    #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> Result<()> {
         let contents = serde_json::to_string(self)
             .with_context(|| anyhow!("failed to serialize {self:?}"))?;
@@ -47,25 +44,5 @@ impl EntryCache {
             .with_context(|| anyhow!("could not rename {tmp_file:?} to {path:?}"))?;
 
         Ok(())
-    }
-
-    // NOTE as its very simple database atm this will do
-    /// Overwrites the database with new entries
-    pub fn update(path: &Path, entries: Vec<crate::Entry>) -> Result<()> {
-        let db = Self {
-            timestamp: std::time::SystemTime::now(),
-            entries,
-        };
-
-        db.save(path)
-    }
-}
-
-impl Default for EntryCache {
-    fn default() -> Self {
-        Self {
-            timestamp: SystemTime::UNIX_EPOCH,
-            entries: vec![],
-        }
     }
 }

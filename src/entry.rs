@@ -1,7 +1,9 @@
-use std::{collections::HashSet, fmt::Display, hash::Hash, str::FromStr};
+use std::{fmt::Display, hash::Hash, str::FromStr};
 use configparser::ini::Ini as IniParser;
 use filt_rs::{FilterValue, Filterable};
 use serde::{Deserialize, Serialize};
+
+use crate::config::Config;
 
 const SECTION: &str = "Desktop Entry";
 const SECTION_ACTION: &str = "Desktop Action";
@@ -52,6 +54,8 @@ pub struct Entry {
     pub entry_type: EntryType,
     pub name: String,
 
+    /// Should be generic name like "Web Browser" but some applications write whole paragraphs in it
+    /// so its not as useful
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generic_name: Option<String>,
 
@@ -61,15 +65,19 @@ pub struct Entry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exec: Option<String>,
 
+    /// Even though its called try_exec, its actually used to check if executable is installed by
+    /// looking in the path for it...
     #[serde(skip_serializing_if = "Option::is_none")]
     pub try_exec: Option<String>,
 
+    /// Should only be available when Type=Link
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
 
+    /// Does this entry run in terminal
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub terminal: bool,
 
@@ -77,17 +85,17 @@ pub struct Entry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
 
+    /// Do not show this entry except in these Desktop Environments
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub only_show_in: Vec<String>,
-
-    // these properties are not a part of XDG spec
-    /// Is the entry favorited
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub favorite: bool,
 
     /// Actions of the entry
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Self>,
+
+    /// User applied tags
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 impl Entry {
@@ -98,7 +106,7 @@ impl Entry {
         entries
     }
 
-    pub fn from_parser(parser: &IniParser, id: &str, lang: Option<&str>, favorites: Option<&HashSet<String>>) -> Result<Option<Self>, String> {
+    pub fn from_parser(parser: &IniParser, id: &str, lang: Option<&str>, config: &Config) -> Result<Option<Self>, String> {
         fn get_lang(parser: &IniParser, section: &str, key: &str, lang: &str) -> Option<String> {
             parser.get(section, &format!("{key}{lang}"))
                 .or(parser.get(section, "{key}"))
@@ -119,7 +127,7 @@ impl Entry {
         let entry_type: EntryType = parser.get(SECTION, "Type")
             .ok_or_else(|| "Type is required in desktop files".to_string())?
             .parse()
-            .unwrap(); // EntryType parse cannot fail
+            .unwrap(); // SAFETY: EntryType parse cannot fail
 
         // ignore other types
         if entry_type == EntryType::Other {
@@ -138,8 +146,6 @@ impl Entry {
                     icon: parser.get(&section, "Icon")
                             // fallback to application icon
                             .or_else(|| parser.get(SECTION, "Icon")),
-                    favorite: favorites.map(|x| x.contains(id)).unwrap_or(false),
-
                     ..Default::default()
                 });
             }
@@ -168,7 +174,7 @@ impl Entry {
                             .map(|y| y.to_string())
                             .collect())
                 .unwrap_or(vec![]),
-            favorite: favorites.map(|x| x.contains(id)).unwrap_or(false),
+            tags: config.tags.get(id).cloned().unwrap_or(vec![]),
             actions,
         }))
     }
@@ -189,8 +195,8 @@ impl Default for Entry {
             icon: None,
             only_show_in: vec![],
             categories: vec![],
-            favorite: false,
             actions: vec![],
+            tags: vec![],
         }
     }
 }
@@ -208,7 +214,7 @@ impl Filterable for Entry {
             "entry.terminal" => self.terminal.into(),
             "entry.icon" => self.icon.as_ref().map(|x| x.as_str()).into(),
             "entry.only_show_in" => FilterValue::Tuple(self.only_show_in.iter().map(|x| Into::<FilterValue>::into(x.as_str())).collect()),
-            "entry.favorite" => self.favorite.into(),
+            "entry.tags" => FilterValue::Tuple(self.tags.iter().map(|x| Into::<FilterValue>::into(x.as_str())).collect()),
             _ => FilterValue::Null,
         }
     }
