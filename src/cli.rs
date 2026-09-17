@@ -10,7 +10,7 @@ pub struct Cli {
     pub cache: bool,
 
     /// Where to store cache of desktop entries
-    #[arg(long, env = "SDLT_CACHE", default_value = "~/.cache/sdlt.json", global = true)]
+    #[arg(long, env = "SDLT_CACHE", default_value = "~/.cache/sdlt", global = true)]
     pub cache_file: PathBuf,
 
     /// Path to file where favorites are stored (JSON array)
