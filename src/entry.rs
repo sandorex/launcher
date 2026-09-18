@@ -17,10 +17,6 @@ pub enum EntryType {
     /// Link desktop file that opens an URL
     Link,
 
-    // NOTE: this is not in spec but im gonna differentiate it here
-    /// Action of an application (not part of XDG spec)
-    Action,
-
     /// Other entry types, just ignored
     Other,
 }
@@ -31,7 +27,6 @@ impl Display for EntryType {
             Self::Application => "Application",
             Self::Link => "Link",
             Self::Other => "Other",
-            Self::Action => "Action",
         })
     }
 }
@@ -41,7 +36,6 @@ impl From<&str> for EntryType {
         match value {
             "Application" => Self::Application,
             "Link" => Self::Link,
-            "Action" => Self::Action,
             _ => Self::Other
         }
     }
@@ -108,15 +102,6 @@ code_docs_struct! {
 }
 
 impl Entry {
-    // TODO
-    /// Split entry and its actions into separate entries, the last one being the actual entry
-    pub fn split_actions(self) -> Vec<Self> {
-        vec![self]
-        // let mut entries = std::mem::replace(&mut self.actions, vec![]);
-        // entries.push(self);
-        // entries
-    }
-
     pub fn from_parser(parser: &IniParser, id: &str, lang: Option<&str>, config: &Config) -> Result<Option<Self>, String> {
         fn get_lang(parser: &IniParser, section: &str, key: &str, lang: &str) -> Option<String> {
             parser.get(section, &format!("{key}{lang}"))
@@ -146,20 +131,16 @@ impl Entry {
             return Ok(None);
         }
 
-        let mut actions: Vec<Self> = vec![];
+        let mut actions: Vec<Rc<EntryAction>> = vec![];
         if let Some(action_names) = parser.get(SECTION, "Actions") {
             for name in action_names.split(';') {
                 let section = format!("{SECTION_ACTION} {}", name);
-                actions.push(Self {
-                    id: id.to_string(),
+                actions.push(Rc::new(EntryAction {
                     name: get_lang(parser, &section, "Name", &lang)
                             .ok_or_else(|| "Name is required in actions".to_string())?,
-                    exec: Some(parser.get(&section, "Exec").ok_or_else(|| "Exec is required in actions".to_string())?),
-                    icon: parser.get(&section, "Icon")
-                            // fallback to application icon
-                            .or_else(|| parser.get(SECTION, "Icon")),
-                    ..Default::default()
-                });
+                    exec: parser.get(&section, "Exec").ok_or_else(|| "Exec is required in actions".to_string())?,
+                    icon: parser.get(&section, "Icon"),
+                }));
             }
         }
 
@@ -187,7 +168,7 @@ impl Entry {
                             .collect())
                 .unwrap_or(vec![]),
             tags: config.tags.get(id).cloned().unwrap_or(vec![]),
-            actions: vec![], // TODO
+            actions,
         }))
     }
 }

@@ -2,14 +2,16 @@ mod cli;
 mod entry;
 mod entry_cache;
 mod config;
+mod modes;
 
 use entry::*;
 use rustc_hash::FxHashMap;
-use std::{io::IsTerminal, path::{Path, PathBuf}, sync::LazyLock};
+use std::{io::IsTerminal, path::{Path, PathBuf}, rc::Rc, sync::LazyLock};
 use clap::Parser;
 use anyhow::{Result, anyhow};
 use configparser::ini::Ini as IniParser;
-use crate::{cli::CmdRofi, config::Config, entry_cache::EntryDB};
+use crate::{config::Config, entry_cache::EntryDB};
+use modes::rofi;
 
 /// Expands paths that start with `~/`
 fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
@@ -26,7 +28,7 @@ fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
     p.to_path_buf()
 }
 
-fn find_entries(config: &Config) -> Result<Vec<Entry>> {
+pub fn find_entries(config: &Config) -> Result<Vec<Entry>> {
     const DEFAULT_PATHS: &[&str] = &[
         "/usr/share/applications",
         "/usr/local/share/applications",
@@ -104,12 +106,11 @@ fn find_entries(config: &Config) -> Result<Vec<Entry>> {
         }
     }
 
-    // split entries that have actions so each action is its own entry
     Ok(entries.into_values().collect())
 }
 
 /// Gets the cached entries if they are recent enough otherwise find them
-fn get_entries(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
+fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
     use entry_cache::EntryDB;
 
     if let Some(path) = cache_path {
@@ -137,8 +138,10 @@ fn main() -> anyhow::Result<()> {
     let mut cli_args = if std::env::var("ROFI_RETV").is_ok() {
         let mut args: Vec<String> = std::env::args().collect();
 
-        // set the command
-        args.insert(1, "rofi".to_string());
+        // set the command if not present already
+        if args.get(1).map(|x| x.as_str()) != Some("rofi") {
+            args.insert(1, "rofi".to_string());
+        }
 
         cli::Cli::parse_from(args)
     } else {
@@ -147,25 +150,21 @@ fn main() -> anyhow::Result<()> {
 
     let cmd = std::mem::replace(&mut cli_args.cmd, cli::CliCommands::None);
 
-    // TODO make cli_args.cache_file an Option<..> so it can be removed when disabled
     // expand home (tilde) in paths
-    cli_args.cache_file = expand_tilde(cli_args.cache_file);
-    cli_args.config_file = expand_tilde(cli_args.config_file);
+    cli_args.cache = cli_args.cache.map(|x| expand_tilde(x).to_path_buf());
+    cli_args.config = expand_tilde(cli_args.config);
 
-    let cache_file = if cli_args.cache { Some(cli_args.cache_file.as_path()) } else { None };
-    let get_config = || Config::read(&cli_args.config_file);
+    let get_config = || Config::read(&cli_args.config);
 
     match cmd {
         cli::CliCommands::Rofi(args) => rofi(&cli_args, args, get_config()?)?,
         cli::CliCommands::List(args) => {
-            // let query = args.query.join(" ");
-            // let query = query.trim();
-
             // list actions as separate entries
             let config = get_config()?;
-            let entries = get_entries(cache_file, &config)?;
+            let entries = get_cache(cli_args.cache.as_deref(), &config)?;
             let entries = &entries.entries;
 
+            // TODO this could be a lazylock
             // detect if output is interactive to output pretty formatted data
             let is_terminal = std::io::stdout().is_terminal();
 
@@ -190,79 +189,47 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             };
 
-            // // if there is no query just print
-            // if query.is_empty() {
-                for entry in entries {
+            for entry in entries {
+                custom_print(&entry)?;
+            }
+        },
+        cli::CliCommands::Query(args) => {
+            // TODO this is literally duplicate of list
+            // detect if output is interactive to output pretty formatted data
+            let is_terminal = std::io::stdout().is_terminal();
+
+            let custom_print = |entry: &Entry| -> Result<()> {
+                match args.format {
+                    cli::OutputFormat::Debug => {
+                        if is_terminal {
+                            println!("{entry:#?}");
+                        } else {
+                            println!("{entry:?}");
+                        }
+                    },
+                    cli::OutputFormat::JSON => {
+                        if is_terminal {
+                            println!("{}", serde_json::to_string_pretty(entry)?);
+                        } else {
+                            println!("{}", serde_json::to_string(entry)?);
+                        }
+                    }
+                }
+
+                Ok(())
+            };
+
+            let config = get_config()?;
+            let cache = get_cache(cli_args.cache.as_deref(), &config)?;
+
+            for id in &args.ids {
+                if let Some(entry) = cache.by_id.get(id) {
                     custom_print(&entry)?;
                 }
-            // } else {
-            //     let filter = Filter::new(query)
-            //         .with_context(|| anyhow!("invalid query {:?}", query))?;
-            //
-            //     for entry in &entries {
-            //         if args.query.len() > 0 && filter.matches(entry)? {
-            //             custom_print(&entry)?;
-            //         }
-            //     }
-            // }
+            }
         },
         cli::CliCommands::None => unreachable!(),
     }
-
-    Ok(())
-}
-
-fn rofi(cli_args: &cli::Cli, args: CmdRofi, config: Config) -> Result<()> {
-    if args.rofi_status.is_none() {
-        eprintln!("Error not running in rofi script mode\n\nRead more with `man 5 rofi-script`");
-        return Ok(());
-    }
-
-    let cache_file = if cli_args.cache { Some(cli_args.cache_file.as_path()) } else { None };
-
-    match args.rofi_status.unwrap() {
-        // initial call
-        0 => {
-            // disable custom input
-            println!("\0no-custom\x1ftrue");
-
-            let cache = get_entries(cache_file, &config)?;
-
-            for entry in &cache.entries {
-                // TODO generic placeholder icon if its missing?
-                // TODO only print options if there is any data
-                println!(
-                    "{name}\0icon\x1f{icon}\x1fmeta\x1f{meta}\x1finfo\x1f{info}",
-                    name = entry.name,
-                    icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or(""),
-                    meta = format!("{} {} {}",
-                        entry.generic_name.as_ref().map(|x| x.as_str()).unwrap_or(""),
-                        entry.comment.as_ref().map(|x| x.as_str()).unwrap_or(""),
-                        // TODO i just added all the info but do categories fit here at all?
-                        entry.categories.join(" "),
-                    ),
-                    info = entry.id,
-                );
-            }
-        },
-
-        // TODO calling the actuall application with wrappers like systemd-cat or swaymsg
-        // selected an entry
-        1 => {
-            let info = std::env::var("ROFI_INFO").unwrap();
-            let cache = get_entries(cache_file, &config)?;
-
-            if let Some(entry) = cache.by_id.get(&info) {
-                println!("got entry {:?}, cmd {:?}", entry.id, entry.exec);
-            }
-        },
-        // 2          selected a custom entry
-        // 3          deleted an entry
-        // 10 - 28    custom keybindings
-        val => {
-            return Err(anyhow!("invalid ROFI_RETV value {val:?}"));
-        },
-    };
 
     Ok(())
 }
