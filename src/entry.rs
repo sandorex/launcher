@@ -21,6 +21,12 @@ pub enum EntryType {
     Other,
 }
 
+impl Default for EntryType {
+    fn default() -> Self {
+        Self::Application
+    }
+}
+
 impl Display for EntryType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match &self {
@@ -50,7 +56,7 @@ pub struct EntryAction {
 
 // NOTE this can be either a link or application
 code_docs_struct! {
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
     pub struct Entry {
         pub id: String,
         pub entry_type: EntryType,
@@ -72,6 +78,10 @@ code_docs_struct! {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub try_exec: Option<String>,
 
+        /// Working directory where the script will be executed
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub path: Option<String>,
+
         /// Should only be available when Type=Link
         #[serde(skip_serializing_if = "Option::is_none")]
         pub url: Option<String>,
@@ -83,7 +93,6 @@ code_docs_struct! {
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         pub terminal: bool,
 
-        // TODO add absolute path to icon for programs that need it
         #[serde(skip_serializing_if = "Option::is_none")]
         pub icon: Option<String>,
 
@@ -103,10 +112,17 @@ code_docs_struct! {
 
 impl Entry {
     pub fn from_parser(parser: &IniParser, id: &str, lang: Option<&str>, config: &Config) -> Result<Option<Self>, String> {
-        fn get_lang(parser: &IniParser, section: &str, key: &str, lang: &str) -> Option<String> {
-            parser.get(section, &format!("{key}{lang}"))
-                .or(parser.get(section, "{key}"))
-        }
+        let get_lang = if lang.is_some_and(|x| !x.is_empty()) {
+            // check for each key twice only if there is a language set
+            |parser: &IniParser, section: &str, key: &str, lang: &str| -> Option<String> {
+                parser.get(section, &format!("{key}{lang}"))
+                    .or(parser.get(section, "{key}"))
+            }
+        } else {
+            |parser: &IniParser, section: &str, key: &str, _lang: &str| -> Option<String> {
+                parser.get(section, key)
+            }
+        };
 
         // skip hidden entries
         if let Ok(no_display) = parser.getbool(SECTION, "NoDisplay") && no_display.unwrap_or(false) {
@@ -150,6 +166,7 @@ impl Entry {
             name: get_lang(parser, SECTION, "Name", &lang).ok_or_else(|| "Name is required in desktop files".to_string())?,
             exec: parser.get(SECTION, "Exec"),
             try_exec: parser.get(SECTION, "TryExec"),
+            path: parser.get(SECTION, "Path"),
             url: parser.get(SECTION, "URL"),
             generic_name: get_lang(parser, SECTION, "GenericName", &lang),
             comment: get_lang(parser, SECTION, "Comment", &lang),
@@ -170,26 +187,5 @@ impl Entry {
             tags: config.tags.get(id).cloned().unwrap_or(vec![]),
             actions,
         }))
-    }
-}
-
-impl Default for Entry {
-    fn default() -> Self {
-        Self {
-            id: "".to_string(),
-            entry_type: EntryType::Application,
-            name: "".to_string(),
-            exec: None,
-            try_exec: None,
-            url: None,
-            generic_name: None,
-            comment: None,
-            terminal: false,
-            icon: None,
-            only_show_in: vec![],
-            categories: vec![],
-            actions: vec![],
-            tags: vec![],
-        }
     }
 }

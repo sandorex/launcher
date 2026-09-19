@@ -1,8 +1,8 @@
 #![allow(unused)]
 
-use std::rc::Rc;
+use std::{path::{Path, PathBuf}, rc::Rc};
 use anyhow::{Result, anyhow};
-use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction}, get_cache};
+use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction, EntryType}, entry_cache::EntryDB, get_cache};
 
 const RETV_INIT_CALL: u8 = 0;
 const RETV_SELECTED_ENTRY: u8 = 1;
@@ -21,17 +21,25 @@ const RETV_CUSTOM_KB_7: u8 = 16;
 const RETV_CUSTOM_KB_8: u8 = 17;
 const RETV_CUSTOM_KB_9: u8 = 18;
 
-// TODO add open in submenu before the action
-// TODO add back option in submenu to leave it?
-
 /// Not to be confused with `CmdRofi` these are commands that are used in `ROFI_INFO`
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-enum RofiCommand {
-    Entry(Rc<Entry>),
-    Action(Rc<EntryAction>),
+enum Command {
+    ListEntries,
+    Entry {
+        entry: Rc<Entry>,
+        force_execute: bool,
+    },
+    // ListActions(Rc<Entry>),
+    ExecuteAction(Rc<Entry>, Rc<EntryAction>),
 }
 
-impl RofiCommand {
+impl Default for Command {
+    fn default() -> Self {
+        Self::ListEntries
+    }
+}
+
+impl Command {
     /// Serializes into a string of hex
     pub fn serialize(&self) -> Result<String> {
         Ok(hex::encode(rkyv::to_bytes::<rkyv::rancor::Error>(self)?))
@@ -43,9 +51,16 @@ impl RofiCommand {
     }
 }
 
-// TODO potentionally use a tmpfile with whole cache so it cannot change while rofi is running?
-// just store the path in ROFI_DATA
-// TODO calling the actuall application with wrappers like systemd-cat or swaymsg
+fn get_fallback_icon(entry_type: &EntryType) -> &'static str {
+    match entry_type {
+        EntryType::Application => "application-x-executable",
+        EntryType::Link => "open-link",
+        EntryType::Other => "",
+    }
+}
+
+// TODO escaping the actual exec command is gonna be a pain
+// TODO calling the actual application with wrappers like systemd-cat or swaymsg
 pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result<()> {
     let status = args.rofi_status;
 
@@ -53,58 +68,70 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
         RETV_INIT_CALL => {
             println!("\0no-custom\x1ftrue");    // no custom entries
             println!("\0use-hot-keys\x1ftrue"); // allow custom keybindings
+        },
+        RETV_SELECTED_ENTRY | RETV_CUSTOM_KB_1 => {},
+        _ => return Ok(()), // ignore all other actions
+    }
 
+    let cmd = if let Ok(data) = std::env::var("ROFI_INFO") {
+        Command::deserialize(&data)?
+    } else {
+        Command::default()
+    };
+
+    match &cmd {
+        Command::ListEntries => {
+            // reuse global cache
             let cache = get_cache(cli_args.cache.as_deref(), &config)?;
 
             for entry in &cache.entries {
-                // TODO generic placeholder icon if its missing? seperate one for links
-                // TODO only print options if there is any data
                 println!(
                     "{name}\0icon\x1f{icon}\x1fmeta\x1f{meta}\x1finfo\x1f{info}",
                     name = entry.name,
-                    icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or("application-default"),
+                    icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
                     meta = format!("{} {} {}",
                         entry.generic_name.as_ref().map(|x| x.as_str()).unwrap_or(""),
                         entry.comment.as_ref().map(|x| x.as_str()).unwrap_or(""),
                         // TODO i just added all the info but do categories fit here at all?
                         entry.categories.join(" "),
                     ),
-                    info = RofiCommand::Entry(Rc::clone(entry)).serialize()?,
+                    info = Command::Entry { entry: Rc::clone(entry), force_execute: false }.serialize()?,
                 );
             }
         },
 
-        // selected entry or custom keybinding 1
-        RETV_SELECTED_ENTRY | RETV_CUSTOM_KB_1 => {
-            let info = std::env::var("ROFI_INFO").unwrap();
-            match RofiCommand::deserialize(&info)? {
-                // select the action normally
-                RofiCommand::Entry(entry) if status == RETV_SELECTED_ENTRY => {
-                    println!("would execute entry {:?} exec {:?}", entry.name, entry.exec);
-                },
+        Command::Entry { entry, force_execute } => {
+            if status == RETV_SELECTED_ENTRY || *force_execute {
+                println!("executing {}", entry.name);
+            } else {
+                println!(
+                    "Start\0icon\x1f{icon}\x1finfo\x1f{info}",
+                    icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
+                    info = Command::Entry { entry: Rc::clone(entry), force_execute: true }.serialize()?,
+                );
 
-                // alt select open the actions
-                RofiCommand::Entry(entry) => {
-                    for action in &entry.actions {
-                        println!(
-                            "{name}\0icon\x1f{icon}\x1finfo\x1f{info}",
-                            name = action.name,
-                            icon = action.icon.as_ref().map(|x| x.as_str()).unwrap_or(""),
-                            info = RofiCommand::Action(Rc::clone(action)).serialize()?,
-                        );
-                    }
-                },
-
-                RofiCommand::Action(action) => {
-                    println!("should execute action exec {:?}", action.exec);
+                for action in &entry.actions {
+                    println!(
+                        "{name}\0icon\x1f{icon}\x1finfo\x1f{info}",
+                        name = action.name,
+                        icon = action.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
+                        info = Command::ExecuteAction(Rc::clone(&entry), Rc::clone(&action)).serialize()?,
+                    );
                 }
-            }
-        },
 
-        val => {
-            return Err(anyhow!("invalid ROFI_RETV value {val:?}"));
-        },
-    };
+                println!(
+                    "Back\0icon\x1f{icon}\x1finfo\x1f{info}",
+                    icon = "go-previous",
+                    info = Command::ListEntries.serialize()?,
+                );
+            }
+        }
+
+        // TODO respect entry StartIn?
+        Command::ExecuteAction(entry, action) => {
+            println!("executing action {}", action.name);
+        }
+    }
 
     Ok(())
 }

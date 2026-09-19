@@ -6,7 +6,7 @@ mod modes;
 
 use entry::*;
 use rustc_hash::FxHashMap;
-use std::{io::IsTerminal, path::{Path, PathBuf}, rc::Rc, sync::LazyLock};
+use std::{io::IsTerminal, path::{Path, PathBuf}, sync::LazyLock};
 use clap::Parser;
 use anyhow::{Result, anyhow};
 use configparser::ini::Ini as IniParser;
