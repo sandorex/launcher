@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use std::{path::{Path, PathBuf}, rc::Rc};
+use std::{path::{Path, PathBuf}, process::Command, rc::Rc};
 use anyhow::{Result, anyhow};
 use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction, EntryType}, entry_cache::EntryDB, get_cache};
 
@@ -23,7 +23,7 @@ const RETV_CUSTOM_KB_9: u8 = 18;
 
 /// Not to be confused with `CmdRofi` these are commands that are used in `ROFI_INFO`
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-enum Command {
+enum RofiCommand {
     ListEntries,
     Entry {
         entry: Rc<Entry>,
@@ -33,13 +33,13 @@ enum Command {
     ExecuteAction(Rc<Entry>, Rc<EntryAction>),
 }
 
-impl Default for Command {
+impl Default for RofiCommand {
     fn default() -> Self {
         Self::ListEntries
     }
 }
 
-impl Command {
+impl RofiCommand {
     /// Serializes into a string of hex
     pub fn serialize(&self) -> Result<String> {
         Ok(hex::encode(rkyv::to_bytes::<rkyv::rancor::Error>(self)?))
@@ -59,8 +59,6 @@ fn get_fallback_icon(entry_type: &EntryType) -> &'static str {
     }
 }
 
-// TODO escaping the actual exec command is gonna be a pain
-// TODO calling the actual application with wrappers like systemd-cat or swaymsg
 pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result<()> {
     let status = args.rofi_status;
 
@@ -74,13 +72,13 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
     }
 
     let cmd = if let Ok(data) = std::env::var("ROFI_INFO") {
-        Command::deserialize(&data)?
+        RofiCommand::deserialize(&data)?
     } else {
-        Command::default()
+        RofiCommand::default()
     };
 
     match &cmd {
-        Command::ListEntries => {
+        RofiCommand::ListEntries => {
             // reuse global cache
             let cache = get_cache(cli_args.cache.as_deref(), &config)?;
 
@@ -95,19 +93,20 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
                         // TODO i just added all the info but do categories fit here at all?
                         entry.categories.join(" "),
                     ),
-                    info = Command::Entry { entry: Rc::clone(entry), force_execute: false }.serialize()?,
+                    info = RofiCommand::Entry { entry: Rc::clone(entry), force_execute: false }.serialize()?,
                 );
             }
         },
 
-        Command::Entry { entry, force_execute } => {
+        RofiCommand::Entry { entry, force_execute } => {
             if status == RETV_SELECTED_ENTRY || *force_execute {
-                println!("executing {}", entry.name);
+                crate::execute_entry(&cli_args, &entry)?;
+                std::process::exit(0); // also terminated rofi
             } else {
                 println!(
                     "Start\0icon\x1f{icon}\x1finfo\x1f{info}",
                     icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
-                    info = Command::Entry { entry: Rc::clone(entry), force_execute: true }.serialize()?,
+                    info = RofiCommand::Entry { entry: Rc::clone(entry), force_execute: true }.serialize()?,
                 );
 
                 for action in &entry.actions {
@@ -115,21 +114,21 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
                         "{name}\0icon\x1f{icon}\x1finfo\x1f{info}",
                         name = action.name,
                         icon = action.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
-                        info = Command::ExecuteAction(Rc::clone(&entry), Rc::clone(&action)).serialize()?,
+                        info = RofiCommand::ExecuteAction(Rc::clone(&entry), Rc::clone(&action)).serialize()?,
                     );
                 }
 
                 println!(
                     "Back\0icon\x1f{icon}\x1finfo\x1f{info}",
                     icon = "go-previous",
-                    info = Command::ListEntries.serialize()?,
+                    info = RofiCommand::ListEntries.serialize()?,
                 );
             }
         }
 
-        // TODO respect entry StartIn?
-        Command::ExecuteAction(entry, action) => {
-            println!("executing action {}", action.name);
+        RofiCommand::ExecuteAction(entry, action) => {
+            crate::execute_action(&cli_args, &entry, &action)?;
+            std::process::exit(0); // also terminated rofi
         }
     }
 

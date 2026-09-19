@@ -111,6 +111,16 @@ code_docs_struct! {
 }
 
 impl Entry {
+    fn clean_exec(exec: &String) -> String {
+        let pattern = regex::Regex::new("%[a-zA-Z]")
+            .expect("invalid exec clean regex");
+
+        pattern
+            .replace_all(exec, "")
+            // xdg escape a percent sign..
+            .replace("%%", "%")
+    }
+
     pub fn from_parser(parser: &IniParser, id: &str, lang: Option<&str>, config: &Config) -> Result<Option<Self>, String> {
         let get_lang = if lang.is_some_and(|x| !x.is_empty()) {
             // check for each key twice only if there is a language set
@@ -154,7 +164,7 @@ impl Entry {
                 actions.push(Rc::new(EntryAction {
                     name: get_lang(parser, &section, "Name", &lang)
                             .ok_or_else(|| "Name is required in actions".to_string())?,
-                    exec: parser.get(&section, "Exec").ok_or_else(|| "Exec is required in actions".to_string())?,
+                    exec: Self::clean_exec(&parser.get(&section, "Exec").ok_or_else(|| "Exec is required in actions".to_string())?),
                     icon: parser.get(&section, "Icon"),
                 }));
             }
@@ -164,7 +174,7 @@ impl Entry {
             id: id.to_string(),
             entry_type,
             name: get_lang(parser, SECTION, "Name", &lang).ok_or_else(|| "Name is required in desktop files".to_string())?,
-            exec: parser.get(SECTION, "Exec"),
+            exec: parser.get(SECTION, "Exec").map(|x| Self::clean_exec(&x)),
             try_exec: parser.get(SECTION, "TryExec"),
             path: parser.get(SECTION, "Path"),
             url: parser.get(SECTION, "URL"),
@@ -187,5 +197,21 @@ impl Entry {
             tags: config.tags.get(id).cloned().unwrap_or(vec![]),
             actions,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+    use configparser::ini::Ini as IniParser;
+    use crate::entry::{EntryAction, EntryType};
+    use super::Entry;
+
+    #[test]
+    fn desktop_file_placeholders() {
+        assert_eq!(
+            Entry::clean_exec(&"/nix/store/ix23cwqfjdap6wyhx27lz189kv5hsw3x-vivaldi-8.1.4087.70/bin/vivaldi %U".to_string()),
+            "/nix/store/ix23cwqfjdap6wyhx27lz189kv5hsw3x-vivaldi-8.1.4087.70/bin/vivaldi ".to_string()
+        );
     }
 }

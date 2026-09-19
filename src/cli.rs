@@ -1,17 +1,57 @@
 use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
-/// XDG Desktop compliant indexer
+const CONFIG: &str = concat!("~/.config/", env!("CARGO_PKG_NAME"), ".json");
+const CACHE: &str = concat!("~/.cache/", env!("CARGO_PKG_NAME"));
+
+// TODO force args after subcommand, subcommand is forced in case of rofi
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about)]
 pub struct Cli {
     /// Where to store cache of desktop entries
-    #[arg(long, env = "SDLT_CACHE", default_value = Some("~/.cache/sdlt"), global = true)]
+    #[arg(long, env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_CACHE"), default_value = Some(CACHE), global = true)]
     pub cache: Option<PathBuf>,
 
     /// Path to config
-    #[arg(long, env = "SDLT_CONFIG", default_value = "~/.config/sdlt.json", global = true)]
+    #[arg(long, env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_CONFIG"), default_value = CONFIG, global = true)]
     pub config: PathBuf,
+
+    /// Command to start terminal applications, `%command%` is replaced by the command
+    ///
+    /// Use `--` to end the command
+    #[arg(
+        short = 'a',
+        long = "app",
+        env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_APP"),
+        // systemd-run --user --slice=app.slice --description="My App Launched from bmenu" 
+        default_values = vec!["systemd-run", "--user", concat!("--slice=", env!("CARGO_PKG_NAME")), "sh", "-c", "%command%"],
+        num_args = 1..,
+        value_terminator = "--",
+        allow_hyphen_values = true,
+        global = true
+    )]
+    pub exec_app: Vec<String>,
+
+    /// Command to start terminal applications, `%command%` is replaced by the command
+    ///
+    /// Use `--` to end the command
+    #[arg(
+        short = 't',
+        long = "term",
+        env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_TERM"),
+        default_values = vec!["systemd-run", "--user", concat!("--slice=", env!("CARGO_PKG_NAME")), "kitty", "-e", "sh", "-c", "%command%"],
+        num_args = 1..,
+        value_terminator = "--",
+        allow_hyphen_values = true,
+        global = true
+    )]
+    pub exec_term: Vec<String>,
+
+    /// Command to start links, `%url%` is replaced by the url
+    ///
+    /// Use `--` to end the command
+    #[arg(short = 'l', long = "link", env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_LINK"), default_values = vec!["xdg-open", "%url%"], num_args = 1.., value_terminator = "--", allow_hyphen_values = true, global = true)]
+    pub exec_link: Vec<String>,
 
     #[command(subcommand)]
     pub cmd: CliCommands,
@@ -22,12 +62,6 @@ pub struct CmdRofi {
     /// Contains code from rofi when running in script mode
     #[arg(long, env = "ROFI_RETV", hide = true)]
     pub rofi_status: u8,
-
-    /// Filter the entries based on their properties using a DSL
-    ///
-    /// For syntax help read: https://docs.rs/filt-rs/
-    #[arg(short, long)]
-    pub query: Option<String>,
 
     // this is provided by rofi
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = false, hide = true)]
@@ -46,13 +80,6 @@ pub enum OutputFormat {
 pub struct CmdList {
     #[arg(short, long, default_value = "json")]
     pub format: OutputFormat,
-
-    // // TODO this could be a struct that is flattened everywhere so its not repeated
-    // /// Filter the entries based on their properties using a DSL
-    // ///
-    // /// For syntax help read: https://docs.rs/filt-rs/
-    // #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = false)]
-    // pub query: Vec<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -66,7 +93,7 @@ pub struct CmdQuery {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CliCommands {
-    /// Used in rofi script mode
+    /// Used in rofi script mode (for more info `man 5 rofi-script`)
     ///
     /// Automatically called when called by rofi
     Rofi(CmdRofi),

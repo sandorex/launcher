@@ -6,9 +6,9 @@ mod modes;
 
 use entry::*;
 use rustc_hash::FxHashMap;
-use std::{io::IsTerminal, path::{Path, PathBuf}, sync::LazyLock};
+use std::{io::IsTerminal, path::{Path, PathBuf}, process::Command, sync::LazyLock};
 use clap::Parser;
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use configparser::ini::Ini as IniParser;
 use crate::{config::Config, entry_cache::EntryDB};
 use modes::rofi;
@@ -109,6 +109,7 @@ pub fn find_entries(config: &Config) -> Result<Vec<Entry>> {
     Ok(entries.into_values().collect())
 }
 
+// TODO respect entry path where to start in
 /// Gets the cached entries if they are recent enough otherwise find them
 fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
     use entry_cache::EntryDB;
@@ -129,10 +130,70 @@ fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
     }
 }
 
-// TODO
-// 2. benchmark
-// 3. actually useable formatter for rofi script mode
-// 4. cli for testing with filters n shit
+pub fn execute_entry(cli_args: &cli::Cli, entry: &Entry) -> Result<()> {
+    match entry.entry_type {
+        EntryType::Application if entry.terminal => {
+            let exec = entry
+                .exec
+                .as_ref()
+                .with_context(|| anyhow!("Tried to execute invalid application entry with empty Exec"))?;
+
+            let mut cmd = Command::new(&cli_args.exec_term[0]);
+
+            if let Some(path) = &entry.path {
+                cmd.current_dir(path);
+            }
+
+            cmd.args(cli_args.exec_term.iter().skip(1).map(|x| x.replace("%command%", exec)));
+            cmd.status()
+                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_term[0]))?;
+        },
+        EntryType::Application => {
+            let exec = entry
+                .exec
+                .as_ref()
+                .with_context(|| anyhow!("Tried to execute invalid application entry with empty Exec"))?;
+
+            let mut cmd = Command::new(&cli_args.exec_app[0]);
+
+            if let Some(path) = &entry.path {
+                cmd.current_dir(path);
+            }
+
+            cmd.args(cli_args.exec_app.iter().skip(1).map(|x| x.replace("%command%", exec)));
+            cmd.status()
+                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_app[0]))?;
+        },
+        EntryType::Link => {
+            let url = entry
+                .url
+                .as_ref()
+                .with_context(|| anyhow!("Tried to open invalid link entry with empty URL"))?;
+
+            Command::new(&cli_args.exec_link[0])
+                .args(cli_args.exec_link.iter().skip(1).map(|x| x.replace("%url%", url)))
+                .status()
+                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_link[0]))?;
+        },
+        EntryType::Other => {},
+    }
+
+    Ok(())
+}
+
+pub fn execute_action(cli_args: &cli::Cli, entry: &Entry, action: &EntryAction) -> Result<()> {
+    let mut cmd = Command::new(&cli_args.exec_term[0]);
+
+    if let Some(path) = &entry.path {
+        cmd.current_dir(path);
+    }
+
+    cmd.args(cli_args.exec_term.iter().skip(1).map(|x| x.replace("%command%", &action.exec)));
+    cmd.status()?;
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     // automatically run rofi subcommand if ran in rofi script mode
     let mut cli_args = if std::env::var("ROFI_RETV").is_ok() {
