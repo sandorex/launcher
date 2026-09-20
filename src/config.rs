@@ -1,12 +1,13 @@
 use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result, anyhow};
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     // tags for each id
-    pub tags: HashMap<String, Vec<String>>,
+    pub tags: HashMap<String, FxHashSet<String>>,
 }
 
 impl Config {
@@ -33,7 +34,8 @@ impl Config {
     /// Save cache to path atomically
     #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> Result<()> {
-        let contents = serde_json::to_string(self)
+        // its user readable config so write it pretty
+        let contents = serde_json::to_string_pretty(self)
             .with_context(|| anyhow!("failed to serialize {self:?}"))?;
 
         let tmp_file = path.with_added_extension("tmp");

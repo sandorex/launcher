@@ -109,7 +109,7 @@ pub fn find_entries(config: &Config) -> Result<Vec<Entry>> {
     Ok(entries.into_values().collect())
 }
 
-// TODO respect entry path where to start in
+// TODO move to entry_cache.rs
 /// Gets the cached entries if they are recent enough otherwise find them
 fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
     use entry_cache::EntryDB;
@@ -130,6 +130,7 @@ fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
     }
 }
 
+// TODO move this to entry.rs
 pub fn execute_entry(cli_args: &cli::Cli, entry: &Entry) -> Result<()> {
     match entry.entry_type {
         EntryType::Application if entry.terminal => {
@@ -194,20 +195,9 @@ pub fn execute_action(cli_args: &cli::Cli, entry: &Entry, action: &EntryAction) 
     Ok(())
 }
 
+// TODO println! can fail when stdout closes with broken pipe erorr
 fn main() -> anyhow::Result<()> {
-    // automatically run rofi subcommand if ran in rofi script mode
-    let mut cli_args = if std::env::var("ROFI_RETV").is_ok() {
-        let mut args: Vec<String> = std::env::args().collect();
-
-        // set the command if not present already
-        if args.get(1).map(|x| x.as_str()) != Some("rofi") {
-            args.insert(1, "rofi".to_string());
-        }
-
-        cli::Cli::parse_from(args)
-    } else {
-        cli::Cli::parse()
-    };
+    let mut cli_args = cli::Cli::parse();
 
     let cmd = std::mem::replace(&mut cli_args.cmd, cli::CliCommands::None);
 
@@ -217,13 +207,33 @@ fn main() -> anyhow::Result<()> {
 
     let get_config = || Config::read(&cli_args.config);
 
+    // TODO both list and query need cleanup
     match cmd {
         cli::CliCommands::Rofi(args) => rofi(&cli_args, args, get_config()?)?,
         cli::CliCommands::List(args) => {
             // list actions as separate entries
             let config = get_config()?;
-            let entries = get_cache(cli_args.cache.as_deref(), &config)?;
-            let entries = &entries.entries;
+            let mut cache = get_cache(cli_args.cache.as_deref(), &config)?;
+
+            if let Some(tag) = &cli_args.sort_tag {
+                cache.entries.sort_by(|b, a| {
+                    a.tags.contains(tag)
+                        .cmp(&b.tags.contains(tag))
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+            }
+
+            // filter only tags
+            let entries = if let Some(tag) = &cli_args.only_tag {
+                if let Some(entries) = cache.by_tag.get(tag) {
+                    entries
+                } else {
+                    eprintln!("No entries found with tag {:?}", tag);
+                    return Ok(());
+                }
+            } else {
+                &cache.entries
+            };
 
             // TODO this could be a lazylock
             // detect if output is interactive to output pretty formatted data
@@ -251,7 +261,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             for entry in entries {
-                custom_print(&entry)?;
+                custom_print(entry)?;
             }
         },
         cli::CliCommands::Query(args) => {

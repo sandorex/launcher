@@ -3,6 +3,7 @@ use anyhow::{Result, anyhow};
 use crate::entry::{Entry, EntryAction};
 use rustc_hash::FxHashMap;
 
+// TODO invalidate when config changes, keep hash of the config or timestamp
 /// Simple database implementation using `FxHashMap`, probably slower than a proper
 /// database but it's a lot simpler
 ///
@@ -43,6 +44,10 @@ impl EntryDB {
             .as_secs();
 
         cache.entries = entries.into_iter().map(|x| Rc::new(x)).collect::<Vec<_>>();
+
+        // sort by name by default
+        cache.entries.sort_by(|a, b| a.name.cmp(&b.name));
+
         for entry in &cache.entries {
             cache.by_id.insert(entry.id.clone(), Rc::clone(entry));
 
@@ -105,11 +110,12 @@ impl EntryDB {
 #[cfg(test)]
 mod tests {
     use std::{io::Cursor, rc::Rc};
+    use rustc_hash::FxHashSet;
     use crate::{entry::{Entry, EntryAction, EntryType}, entry_cache::EntryDB};
 
     #[test]
     fn entrydb_file() {
-        let buf: Vec<u8> = Vec::with_capacity(1000); // 1kB
+        let buf: Vec<u8> = Vec::with_capacity(EntryDB::MAX_SIZE as usize);
         let mut buf = Cursor::new(buf);
 
         let cache = EntryDB::from_entries(vec![
@@ -117,7 +123,12 @@ mod tests {
                 id: "com.bravesoftware.brave".to_string(),
                 entry_type: EntryType::Application,
                 name: "Brave".to_string(),
-                tags: vec!["banana".to_string(), "fruit".to_string()],
+                tags: { // TODO this is awfully ugly
+                    let mut set: FxHashSet<String> = FxHashSet::default();
+                    set.insert("banana".to_string());
+                    set.insert("fruit".to_string());
+                    set
+                },
                 actions: vec![
                     Rc::new(EntryAction {
                         name: "Brave Action 1".to_string(),
@@ -136,7 +147,12 @@ mod tests {
                 id: "com.vivaldi.vivaldi".to_string(),
                 entry_type: EntryType::Application,
                 name: "Vivaldi".to_string(),
-                tags: vec!["strawberry".to_string(), "fruit".to_string()],
+                tags: {
+                    let mut set: FxHashSet<String> = FxHashSet::default();
+                    set.insert("strawberry".to_string());
+                    set.insert("fruit".to_string());
+                    set
+                },
                 ..Default::default()
             },
         ]);

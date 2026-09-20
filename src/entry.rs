@@ -1,10 +1,11 @@
-use std::{fmt::Display, hash::Hash};
+use std::{fmt::Display, hash::Hash, sync::LazyLock};
 use code_docs::{code_docs_struct, DocumentedStruct};
 use configparser::ini::Ini as IniParser;
 use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use anyhow::Result;
 use std::rc::Rc;
+use rustc_hash::FxHashSet;
 
 const SECTION: &str = "Desktop Entry";
 const SECTION_ACTION: &str = "Desktop Action";
@@ -86,8 +87,8 @@ code_docs_struct! {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub url: Option<String>,
 
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        pub categories: Vec<String>,
+        #[serde(skip_serializing_if = "FxHashSet::is_empty")]
+        pub categories: FxHashSet<String>,
 
         /// Does this entry run in terminal
         #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -97,25 +98,27 @@ code_docs_struct! {
         pub icon: Option<String>,
 
         /// Do not show this entry except in these Desktop Environments
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        pub only_show_in: Vec<String>,
+        #[serde(skip_serializing_if = "FxHashSet::is_empty")]
+        pub only_show_in: FxHashSet<String>,
 
         /// Actions of the entry
         #[serde(skip_serializing_if = "Vec::is_empty")]
         pub actions: Vec<Rc<EntryAction>>,
 
         /// User applied tags
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        pub tags: Vec<String>,
+        #[serde(skip_serializing_if = "FxHashSet::is_empty")]
+        pub tags: FxHashSet<String>,
     }
 }
 
 impl Entry {
     fn clean_exec(exec: &String) -> String {
-        let pattern = regex::Regex::new("%[a-zA-Z]")
-            .expect("invalid exec clean regex");
+        static PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new("%[a-zA-Z]")
+                .expect("invalid exec clean regex")
+        });
 
-        pattern
+        PATTERN
             .replace_all(exec, "")
             // xdg escape a percent sign..
             .replace("%%", "%")
@@ -187,14 +190,18 @@ impl Entry {
                 .map(|x| x.split(';')
                             .map(|y| y.to_string())
                             .collect())
-                .unwrap_or(vec![]),
+                .unwrap_or_default(),
             categories: parser
                 .get(SECTION, "Categories")
                 .map(|x| x.split(';')
                             .map(|y| y.to_string())
                             .collect())
-                .unwrap_or(vec![]),
-            tags: config.tags.get(id).cloned().unwrap_or(vec![]),
+                .unwrap_or_default(),
+            tags: config
+                .tags
+                .get(id)
+                .cloned()
+                .unwrap_or_default(),
             actions,
         }))
     }
@@ -202,9 +209,6 @@ impl Entry {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
-    use configparser::ini::Ini as IniParser;
-    use crate::entry::{EntryAction, EntryType};
     use super::Entry;
 
     #[test]

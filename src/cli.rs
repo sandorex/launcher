@@ -4,16 +4,15 @@ use clap::{Args, Parser, Subcommand};
 const CONFIG: &str = concat!("~/.config/", env!("CARGO_PKG_NAME"), ".json");
 const CACHE: &str = concat!("~/.cache/", env!("CARGO_PKG_NAME"));
 
-// TODO force args after subcommand, subcommand is forced in case of rofi
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about)]
 pub struct Cli {
     /// Where to store cache of desktop entries
-    #[arg(long, env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_CACHE"), default_value = Some(CACHE), global = true)]
+    #[arg(long, env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_CACHE"), default_value = Some(CACHE))]
     pub cache: Option<PathBuf>,
 
     /// Path to config
-    #[arg(long, env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_CONFIG"), default_value = CONFIG, global = true)]
+    #[arg(long, env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_CONFIG"), default_value = CONFIG)]
     pub config: PathBuf,
 
     /// Command to start terminal applications, `%command%` is replaced by the command
@@ -23,12 +22,10 @@ pub struct Cli {
         short = 'a',
         long = "app",
         env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_APP"),
-        // systemd-run --user --slice=app.slice --description="My App Launched from bmenu" 
         default_values = vec!["systemd-run", "--user", concat!("--slice=", env!("CARGO_PKG_NAME")), "sh", "-c", "%command%"],
         num_args = 1..,
         value_terminator = "--",
         allow_hyphen_values = true,
-        global = true
     )]
     pub exec_app: Vec<String>,
 
@@ -43,15 +40,29 @@ pub struct Cli {
         num_args = 1..,
         value_terminator = "--",
         allow_hyphen_values = true,
-        global = true
     )]
     pub exec_term: Vec<String>,
 
     /// Command to start links, `%url%` is replaced by the url
     ///
     /// Use `--` to end the command
-    #[arg(short = 'l', long = "link", env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_LINK"), default_values = vec!["xdg-open", "%url%"], num_args = 1.., value_terminator = "--", allow_hyphen_values = true, global = true)]
+    #[arg(
+        short = 'l',
+        long = "link",
+        env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_LINK"),
+        default_values = vec!["xdg-open", "%url%"], num_args = 1..,
+        value_terminator = "--",
+        allow_hyphen_values = true,
+    )]
     pub exec_link: Vec<String>,
+
+    /// Sort entries so tagged ones are at top
+    #[arg(long)]
+    pub sort_tag: Option<String>,
+
+    /// Only show entries that are tagged
+    #[arg(long, conflicts_with = "sort_tag")]
+    pub only_tag: Option<String>,
 
     #[command(subcommand)]
     pub cmd: CliCommands,
@@ -98,7 +109,7 @@ pub enum CliCommands {
     /// Automatically called when called by rofi
     Rofi(CmdRofi),
 
-    /// Query entries
+    /// List all entries
     List(CmdList),
 
     /// Query for specific application using the id

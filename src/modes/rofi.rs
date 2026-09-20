@@ -2,6 +2,7 @@
 
 use std::{path::{Path, PathBuf}, process::Command, rc::Rc};
 use anyhow::{Result, anyhow};
+use rustc_hash::FxHashSet;
 use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction, EntryType}, entry_cache::EntryDB, get_cache};
 
 const RETV_INIT_CALL: u8 = 0;
@@ -29,7 +30,6 @@ enum RofiCommand {
         entry: Rc<Entry>,
         force_execute: bool,
     },
-    // ListActions(Rc<Entry>),
     ExecuteAction(Rc<Entry>, Rc<EntryAction>),
 }
 
@@ -59,19 +59,20 @@ fn get_fallback_icon(entry_type: &EntryType) -> &'static str {
     }
 }
 
-pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result<()> {
-    let status = args.rofi_status;
+// TODO the state machine here could sue some abstraction
+pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, mut config: Config) -> Result<()> {
+    let mut status = args.rofi_status;
 
     match status {
         RETV_INIT_CALL => {
             println!("\0no-custom\x1ftrue");    // no custom entries
             println!("\0use-hot-keys\x1ftrue"); // allow custom keybindings
         },
-        RETV_SELECTED_ENTRY | RETV_CUSTOM_KB_1 => {},
+        RETV_SELECTED_ENTRY | RETV_CUSTOM_KB_1 | RETV_CUSTOM_KB_2 => {},
         _ => return Ok(()), // ignore all other actions
     }
 
-    let cmd = if let Ok(data) = std::env::var("ROFI_INFO") {
+    let mut cmd = if let Ok(data) = std::env::var("ROFI_INFO") {
         RofiCommand::deserialize(&data)?
     } else {
         RofiCommand::default()
@@ -80,9 +81,31 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
     match &cmd {
         RofiCommand::ListEntries => {
             // reuse global cache
-            let cache = get_cache(cli_args.cache.as_deref(), &config)?;
+            let mut cache = get_cache(cli_args.cache.as_deref(), &config)?;
 
-            for entry in &cache.entries {
+            // TODO maybe some better way to sort?
+            // sorting by tag then name
+            if let Some(tag) = &cli_args.sort_tag {
+                cache.entries.sort_by(|b, a| {
+                    a.tags.contains(tag)
+                        .cmp(&b.tags.contains(tag))
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+            }
+
+            // filter only tags
+            let entries = if let Some(tag) = &cli_args.only_tag {
+                if let Some(entries) = cache.by_tag.get(tag) {
+                    entries
+                } else {
+                    eprintln!("No entries found with tag {:?}", tag);
+                    return Ok(());
+                }
+            } else {
+                &cache.entries
+            };
+
+            for (i, entry) in entries.iter().enumerate() {
                 println!(
                     "{name}\0icon\x1f{icon}\x1fmeta\x1f{meta}\x1finfo\x1f{info}",
                     name = entry.name,
@@ -91,7 +114,15 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
                         entry.generic_name.as_ref().map(|x| x.as_str()).unwrap_or(""),
                         entry.comment.as_ref().map(|x| x.as_str()).unwrap_or(""),
                         // TODO i just added all the info but do categories fit here at all?
-                        entry.categories.join(" "),
+                        // NOTE i had to do fold as FxHashSet does not impl `join`
+                        entry.categories.iter().fold(String::new(), |mut acc, s| {
+                            if !acc.is_empty() {
+                                acc.push_str(" ");
+                            }
+
+                            acc.push_str(s);
+                            acc
+                        }),
                     ),
                     info = RofiCommand::Entry { entry: Rc::clone(entry), force_execute: false }.serialize()?,
                 );
@@ -101,7 +132,27 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
         RofiCommand::Entry { entry, force_execute } => {
             if status == RETV_SELECTED_ENTRY || *force_execute {
                 crate::execute_entry(&cli_args, &entry)?;
-                std::process::exit(0); // also terminated rofi
+                std::process::exit(0); // also terminates rofi
+            } else if status == RETV_CUSTOM_KB_2 {
+                if !config.tags.contains_key(&entry.id) {
+                    config.tags.insert(entry.id.clone(), FxHashSet::default());
+                }
+
+                let tags = config.tags.get_mut(&entry.id).unwrap();
+                if !tags.contains("favorite") {
+                    tags.insert("favorite".to_string());
+
+                    // save tag modifications
+                    config.save(&cli_args.config)?;
+                }
+
+                // button to go back
+                println!(
+                    "Added {name:?} to favorites\0icon\x1f{icon}\x1finfo\x1f{info}",
+                    name = entry.name,
+                    icon = "go-previous",
+                    info = RofiCommand::ListEntries.serialize()?,
+                );
             } else {
                 println!(
                     "Start\0icon\x1f{icon}\x1finfo\x1f{info}",
@@ -128,7 +179,7 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, config: Config) -> Result
 
         RofiCommand::ExecuteAction(entry, action) => {
             crate::execute_action(&cli_args, &entry, &action)?;
-            std::process::exit(0); // also terminated rofi
+            std::process::exit(0); // also terminates rofi
         }
     }
 
