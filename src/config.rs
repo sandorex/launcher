@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
+// TODO store the exec scripts in the config? its more readable
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     // tags for each id

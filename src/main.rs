@@ -132,6 +132,8 @@ fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
 
 // TODO move this to entry.rs
 pub fn execute_entry(cli_args: &cli::Cli, entry: &Entry) -> Result<()> {
+    use std::process::Stdio;
+
     match entry.entry_type {
         EntryType::Application if entry.terminal => {
             let exec = entry
@@ -141,12 +143,16 @@ pub fn execute_entry(cli_args: &cli::Cli, entry: &Entry) -> Result<()> {
 
             let mut cmd = Command::new(&cli_args.exec_term[0]);
 
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+            cmd.stdin(Stdio::null());
+
             if let Some(path) = &entry.path {
                 cmd.current_dir(path);
             }
 
             cmd.args(cli_args.exec_term.iter().skip(1).map(|x| x.replace("%command%", exec)));
-            cmd.status()
+            cmd.spawn()
                 .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_term[0]))?;
         },
         EntryType::Application => {
@@ -157,12 +163,16 @@ pub fn execute_entry(cli_args: &cli::Cli, entry: &Entry) -> Result<()> {
 
             let mut cmd = Command::new(&cli_args.exec_app[0]);
 
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+            cmd.stdin(Stdio::null());
+
             if let Some(path) = &entry.path {
                 cmd.current_dir(path);
             }
 
             cmd.args(cli_args.exec_app.iter().skip(1).map(|x| x.replace("%command%", exec)));
-            cmd.status()
+            cmd.spawn()
                 .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_app[0]))?;
         },
         EntryType::Link => {

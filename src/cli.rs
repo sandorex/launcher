@@ -15,6 +15,7 @@ pub struct Cli {
     #[arg(long, env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_CONFIG"), default_value = CONFIG)]
     pub config: PathBuf,
 
+    // TODO is the command a single string when provided using ENV?
     /// Command to start terminal applications, `%command%` is replaced by the command
     ///
     /// Use `--` to end the command
@@ -22,7 +23,7 @@ pub struct Cli {
         short = 'a',
         long = "app",
         env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_APP"),
-        default_values = vec!["systemd-run", "--user", concat!("--slice=", env!("CARGO_PKG_NAME")), "sh", "-c", "%command%"],
+        default_values = vec!["sh", "-c", "%command%"],
         num_args = 1..,
         value_terminator = "--",
         allow_hyphen_values = true,
@@ -36,7 +37,7 @@ pub struct Cli {
         short = 't',
         long = "term",
         env = concat!(env!("CARGO_PKG_NAME_UPPERCASE"), "_TERM"),
-        default_values = vec!["systemd-run", "--user", concat!("--slice=", env!("CARGO_PKG_NAME")), "kitty", "-e", "sh", "-c", "%command%"],
+        default_values = vec!["kitty", "-e", "sh", "-c", "%command%"],
         num_args = 1..,
         value_terminator = "--",
         allow_hyphen_values = true,
