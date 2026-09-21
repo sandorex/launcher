@@ -6,11 +6,11 @@ mod modes;
 
 use entry::*;
 use rustc_hash::FxHashMap;
-use std::{io::IsTerminal, path::{Path, PathBuf}, process::Command, sync::LazyLock};
+use std::{io::IsTerminal, path::{Path, PathBuf}, sync::LazyLock};
 use clap::Parser;
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
 use configparser::ini::Ini as IniParser;
-use crate::{config::Config, entry_cache::EntryDB};
+use crate::{config::Config, entry_cache::get_cache};
 use modes::rofi;
 
 /// Expands paths that start with `~/`
@@ -107,102 +107,6 @@ pub fn find_entries(config: &Config) -> Result<Vec<Entry>> {
     }
 
     Ok(entries.into_values().collect())
-}
-
-// TODO move to entry_cache.rs
-/// Gets the cached entries if they are recent enough otherwise find them
-fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
-    use entry_cache::EntryDB;
-
-    if let Some(path) = cache_path {
-        if let Ok(db) = EntryDB::from_file(path) && !db.is_old() {
-            return Ok(db);
-        } else {
-            let entries = find_entries(config)?;
-            let cache = EntryDB::from_entries(entries);
-
-            cache.save(path)?;
-
-            Ok(cache)
-        }
-    } else {
-        Ok(EntryDB::from_entries(find_entries(config)?))
-    }
-}
-
-// TODO move this to entry.rs
-pub fn execute_entry(cli_args: &cli::Cli, entry: &Entry) -> Result<()> {
-    use std::process::Stdio;
-
-    match entry.entry_type {
-        EntryType::Application if entry.terminal => {
-            let exec = entry
-                .exec
-                .as_ref()
-                .with_context(|| anyhow!("Tried to execute invalid application entry with empty Exec"))?;
-
-            let mut cmd = Command::new(&cli_args.exec_term[0]);
-
-            cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::null());
-            cmd.stdin(Stdio::null());
-
-            if let Some(path) = &entry.path {
-                cmd.current_dir(path);
-            }
-
-            cmd.args(cli_args.exec_term.iter().skip(1).map(|x| x.replace("%command%", exec)));
-            cmd.spawn()
-                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_term[0]))?;
-        },
-        EntryType::Application => {
-            let exec = entry
-                .exec
-                .as_ref()
-                .with_context(|| anyhow!("Tried to execute invalid application entry with empty Exec"))?;
-
-            let mut cmd = Command::new(&cli_args.exec_app[0]);
-
-            cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::null());
-            cmd.stdin(Stdio::null());
-
-            if let Some(path) = &entry.path {
-                cmd.current_dir(path);
-            }
-
-            cmd.args(cli_args.exec_app.iter().skip(1).map(|x| x.replace("%command%", exec)));
-            cmd.spawn()
-                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_app[0]))?;
-        },
-        EntryType::Link => {
-            let url = entry
-                .url
-                .as_ref()
-                .with_context(|| anyhow!("Tried to open invalid link entry with empty URL"))?;
-
-            Command::new(&cli_args.exec_link[0])
-                .args(cli_args.exec_link.iter().skip(1).map(|x| x.replace("%url%", url)))
-                .status()
-                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_link[0]))?;
-        },
-        EntryType::Other => {},
-    }
-
-    Ok(())
-}
-
-pub fn execute_action(cli_args: &cli::Cli, entry: &Entry, action: &EntryAction) -> Result<()> {
-    let mut cmd = Command::new(&cli_args.exec_term[0]);
-
-    if let Some(path) = &entry.path {
-        cmd.current_dir(path);
-    }
-
-    cmd.args(cli_args.exec_term.iter().skip(1).map(|x| x.replace("%command%", &action.exec)));
-    cmd.status()?;
-
-    Ok(())
 }
 
 // TODO println! can fail when stdout closes with broken pipe erorr

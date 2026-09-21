@@ -1,6 +1,6 @@
 use std::{path::Path, rc::Rc};
 use anyhow::{Result, anyhow};
-use crate::entry::{Entry, EntryAction};
+use crate::{config::Config, entry::{Entry, EntryAction}};
 use rustc_hash::FxHashMap;
 
 // TODO invalidate when config changes, keep hash of the config or timestamp
@@ -13,6 +13,7 @@ use rustc_hash::FxHashMap;
 pub struct EntryDB {
     /// Time of creation in seconds
     pub timestamp: u64,
+
     pub by_id: FxHashMap<String, Rc<Entry>>,
     pub by_tag: FxHashMap<String, Vec<Rc<Entry>>>,
     pub entries: Vec<Rc<Entry>>,
@@ -23,7 +24,7 @@ impl EntryDB {
     const MAX_SIZE: u64 = 100 * 1024; // 100kB
     const OLD_THRESHOLD: u64 = 60 * 60 * 60; // 1 hour
 
-    pub fn is_old(&self) -> bool {
+    pub fn is_valid(&self, config_mtime: u64) -> bool {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let elapsed = SystemTime::now()
@@ -32,6 +33,7 @@ impl EntryDB {
             .as_secs();
 
         elapsed > (self.timestamp + Self::OLD_THRESHOLD)
+            && self.timestamp > config_mtime
     }
 
     pub fn from_entries(entries: Vec<Entry>) -> Self {
@@ -106,6 +108,26 @@ impl EntryDB {
         Ok(())
     }
 }
+
+/// Gets the cached entries if they are recent enough otherwise find them
+pub fn get_cache(cache_path: Option<&Path>, config: &Config) -> Result<EntryDB> {
+    if let Some(path) = cache_path {
+        if let Ok(db) = EntryDB::from_file(path) && !db.is_valid(config.mtime) {
+            return Ok(db);
+        } else {
+            let entries = crate::find_entries(config)?;
+            let cache = EntryDB::from_entries(entries);
+
+            cache.save(path)?;
+
+            Ok(cache)
+        }
+    } else {
+        Ok(EntryDB::from_entries(crate::find_entries(config)?))
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {

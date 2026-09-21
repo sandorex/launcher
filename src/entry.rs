@@ -1,9 +1,9 @@
-use std::{fmt::Display, hash::Hash, sync::LazyLock};
+use std::{fmt::Display, hash::Hash, process::Command, sync::LazyLock};
 use code_docs::{code_docs_struct, DocumentedStruct};
 use configparser::ini::Ini as IniParser;
 use serde::{Deserialize, Serialize};
 use crate::config::Config;
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use std::rc::Rc;
 use rustc_hash::FxHashSet;
 
@@ -206,6 +206,81 @@ impl Entry {
         }))
     }
 }
+
+pub fn execute_entry(cli_args: &crate::cli::Cli, entry: &Entry) -> Result<()> {
+    use std::process::Stdio;
+
+    match entry.entry_type {
+        EntryType::Application if entry.terminal => {
+            let exec = entry
+                .exec
+                .as_ref()
+                .with_context(|| anyhow!("Tried to execute invalid application entry with empty Exec"))?;
+
+            let mut cmd = Command::new(&cli_args.exec_term[0]);
+
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+            cmd.stdin(Stdio::null());
+
+            if let Some(path) = &entry.path {
+                cmd.current_dir(path);
+            }
+
+            cmd.args(cli_args.exec_term.iter().skip(1).map(|x| x.replace("%command%", exec)));
+            cmd.spawn()
+                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_term[0]))?;
+        },
+        EntryType::Application => {
+            let exec = entry
+                .exec
+                .as_ref()
+                .with_context(|| anyhow!("Tried to execute invalid application entry with empty Exec"))?;
+
+            let mut cmd = Command::new(&cli_args.exec_app[0]);
+
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+            cmd.stdin(Stdio::null());
+
+            if let Some(path) = &entry.path {
+                cmd.current_dir(path);
+            }
+
+            cmd.args(cli_args.exec_app.iter().skip(1).map(|x| x.replace("%command%", exec)));
+            cmd.spawn()
+                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_app[0]))?;
+        },
+        EntryType::Link => {
+            let url = entry
+                .url
+                .as_ref()
+                .with_context(|| anyhow!("Tried to open invalid link entry with empty URL"))?;
+
+            Command::new(&cli_args.exec_link[0])
+                .args(cli_args.exec_link.iter().skip(1).map(|x| x.replace("%url%", url)))
+                .status()
+                .with_context(|| anyhow!("could not execute {:?}", cli_args.exec_link[0]))?;
+        },
+        EntryType::Other => {},
+    }
+
+    Ok(())
+}
+
+pub fn execute_action(cli_args: &crate::cli::Cli, entry: &Entry, action: &EntryAction) -> Result<()> {
+    let mut cmd = Command::new(&cli_args.exec_term[0]);
+
+    if let Some(path) = &entry.path {
+        cmd.current_dir(path);
+    }
+
+    cmd.args(cli_args.exec_term.iter().skip(1).map(|x| x.replace("%command%", &action.exec)));
+    cmd.status()?;
+
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {

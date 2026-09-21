@@ -3,7 +3,7 @@
 use std::{path::{Path, PathBuf}, process::Command, rc::Rc};
 use anyhow::{Result, anyhow};
 use rustc_hash::FxHashSet;
-use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction, EntryType}, entry_cache::EntryDB, get_cache};
+use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction, EntryType, execute_action, execute_entry}, entry_cache::EntryDB, get_cache};
 
 const RETV_INIT_CALL: u8 = 0;
 const RETV_SELECTED_ENTRY: u8 = 1;
@@ -131,7 +131,7 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, mut config: Config) -> Re
 
         RofiCommand::Entry { entry, force_execute } => {
             if status == RETV_SELECTED_ENTRY || *force_execute {
-                crate::execute_entry(&cli_args, &entry)?;
+                execute_entry(&cli_args, &entry)?;
                 std::process::exit(0); // also terminates rofi
             } else if status == RETV_CUSTOM_KB_2 {
                 if !config.tags.contains_key(&entry.id) {
@@ -178,7 +178,7 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, mut config: Config) -> Re
         }
 
         RofiCommand::ExecuteAction(entry, action) => {
-            crate::execute_action(&cli_args, &entry, &action)?;
+            execute_action(&cli_args, &entry, &action)?;
             std::process::exit(0); // also terminates rofi
         }
     }
