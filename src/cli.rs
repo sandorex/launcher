@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
+use crate::formatter::Formatter;
+
 const CONFIG: &str = concat!("~/.config/", env!("CARGO_PKG_NAME"), ".json");
 const CACHE: &str = concat!("~/.cache/", env!("CARGO_PKG_NAME"));
 
@@ -80,24 +82,16 @@ pub struct CmdRofi {
     pub rest: Vec<String>,
 }
 
-/// Output format of data
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum OutputFormat {
-    /// Rust debug format
-    Debug,
-    JSON,
-}
-
 #[derive(Args, Debug, Clone)]
 pub struct CmdList {
     #[arg(short, long, default_value = "json")]
-    pub format: OutputFormat,
+    pub format: Formatter,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct CmdQuery {
     #[arg(short, long, default_value = "json")]
-    pub format: OutputFormat,
+    pub format: Formatter,
 
     /// Ids of the applications
     pub ids: Vec<String>,

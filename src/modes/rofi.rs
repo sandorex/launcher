@@ -3,7 +3,7 @@
 use std::{path::{Path, PathBuf}, process::Command, rc::Rc};
 use anyhow::{Result, anyhow};
 use rustc_hash::FxHashSet;
-use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction, EntryType, execute_action, execute_entry}, entry_cache::EntryDB, get_cache};
+use crate::{cli::CmdRofi, config::Config, entry::{Entry, EntryAction, EntryType, execute_action, execute_entry}, entry_cache::EntryDB, formatter::Formatter, get_cache};
 
 const RETV_INIT_CALL: u8 = 0;
 const RETV_SELECTED_ENTRY: u8 = 1;
@@ -51,17 +51,10 @@ impl RofiCommand {
     }
 }
 
-fn get_fallback_icon(entry_type: &EntryType) -> &'static str {
-    match entry_type {
-        EntryType::Application => "application-x-executable",
-        EntryType::Link => "open-link",
-        EntryType::Other => "",
-    }
-}
-
-// TODO the state machine here could sue some abstraction
+// TODO the state machine here could use some abstraction
 pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, mut config: Config) -> Result<()> {
     let mut status = args.rofi_status;
+    let formatter = Formatter::Rofi;
 
     match status {
         RETV_INIT_CALL => {
@@ -107,24 +100,9 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, mut config: Config) -> Re
 
             for (i, entry) in entries.iter().enumerate() {
                 println!(
-                    "{name}\0icon\x1f{icon}\x1fmeta\x1f{meta}\x1finfo\x1f{info}",
-                    name = entry.name,
-                    icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
-                    meta = format!("{} {} {}",
-                        entry.generic_name.as_ref().map(|x| x.as_str()).unwrap_or(""),
-                        entry.comment.as_ref().map(|x| x.as_str()).unwrap_or(""),
-                        // TODO i just added all the info but do categories fit here at all?
-                        // NOTE i had to do fold as FxHashSet does not impl `join`
-                        entry.categories.iter().fold(String::new(), |mut acc, s| {
-                            if !acc.is_empty() {
-                                acc.push_str(" ");
-                            }
-
-                            acc.push_str(s);
-                            acc
-                        }),
-                    ),
-                    info = RofiCommand::Entry { entry: Rc::clone(entry), force_execute: false }.serialize()?,
+                    "{}\x1finfo\x1f{}",
+                    formatter.format_entry(entry)?,
+                    RofiCommand::Entry { entry: Rc::clone(entry), force_execute: false }.serialize()?,
                 );
             }
         },
@@ -156,7 +134,7 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, mut config: Config) -> Re
             } else {
                 println!(
                     "Start\0icon\x1f{icon}\x1finfo\x1f{info}",
-                    icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
+                    icon = entry.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| crate::get_fallback_icon(&entry.entry_type)),
                     info = RofiCommand::Entry { entry: Rc::clone(entry), force_execute: true }.serialize()?,
                 );
 
@@ -164,7 +142,7 @@ pub fn rofi(cli_args: &crate::cli::Cli, args: CmdRofi, mut config: Config) -> Re
                     println!(
                         "{name}\0icon\x1f{icon}\x1finfo\x1f{info}",
                         name = action.name,
-                        icon = action.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| get_fallback_icon(&entry.entry_type)),
+                        icon = action.icon.as_ref().map(|x| x.as_str()).unwrap_or_else(|| crate::get_fallback_icon(&entry.entry_type)),
                         info = RofiCommand::ExecuteAction(Rc::clone(&entry), Rc::clone(&action)).serialize()?,
                     );
                 }

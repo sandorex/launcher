@@ -3,6 +3,7 @@ mod entry;
 mod entry_cache;
 mod config;
 mod modes;
+mod formatter;
 
 use entry::*;
 use rustc_hash::FxHashMap;
@@ -10,7 +11,7 @@ use std::{io::IsTerminal, path::{Path, PathBuf}, sync::LazyLock};
 use clap::Parser;
 use anyhow::Result;
 use configparser::ini::Ini as IniParser;
-use crate::{config::Config, entry_cache::get_cache};
+use crate::{config::Config, entry_cache::get_cache, formatter::Formatter};
 use modes::rofi;
 
 /// Expands paths that start with `~/`
@@ -26,6 +27,14 @@ fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
     }
 
     p.to_path_buf()
+}
+
+pub fn get_fallback_icon(entry_type: &EntryType) -> &'static str {
+    match entry_type {
+        EntryType::Application => "application-x-executable",
+        EntryType::Link => "open-link",
+        EntryType::Other => "",
+    }
 }
 
 pub fn find_entries(config: &Config) -> Result<Vec<Entry>> {
@@ -121,7 +130,6 @@ fn main() -> anyhow::Result<()> {
 
     let get_config = || Config::read(&cli_args.config);
 
-    // TODO both list and query need cleanup
     match cmd {
         cli::CliCommands::Rofi(args) => rofi(&cli_args, args, get_config()?)?,
         cli::CliCommands::List(args) => {
@@ -149,67 +157,17 @@ fn main() -> anyhow::Result<()> {
                 &cache.entries
             };
 
-            // TODO this could be a lazylock
-            // detect if output is interactive to output pretty formatted data
-            let is_terminal = std::io::stdout().is_terminal();
-
-            let custom_print = |entry: &Entry| -> Result<()> {
-                match args.format {
-                    cli::OutputFormat::Debug => {
-                        if is_terminal {
-                            println!("{entry:#?}");
-                        } else {
-                            println!("{entry:?}");
-                        }
-                    },
-                    cli::OutputFormat::JSON => {
-                        if is_terminal {
-                            println!("{}", serde_json::to_string_pretty(entry)?);
-                        } else {
-                            println!("{}", serde_json::to_string(entry)?);
-                        }
-                    }
-                }
-
-                Ok(())
-            };
-
             for entry in entries {
-                custom_print(entry)?;
+                println!("{}", args.format.format_entry(entry)?);
             }
         },
         cli::CliCommands::Query(args) => {
-            // TODO this is literally duplicate of list
-            // detect if output is interactive to output pretty formatted data
-            let is_terminal = std::io::stdout().is_terminal();
-
-            let custom_print = |entry: &Entry| -> Result<()> {
-                match args.format {
-                    cli::OutputFormat::Debug => {
-                        if is_terminal {
-                            println!("{entry:#?}");
-                        } else {
-                            println!("{entry:?}");
-                        }
-                    },
-                    cli::OutputFormat::JSON => {
-                        if is_terminal {
-                            println!("{}", serde_json::to_string_pretty(entry)?);
-                        } else {
-                            println!("{}", serde_json::to_string(entry)?);
-                        }
-                    }
-                }
-
-                Ok(())
-            };
-
             let config = get_config()?;
             let cache = get_cache(cli_args.cache.as_deref(), &config)?;
 
             for id in &args.ids {
                 if let Some(entry) = cache.by_id.get(id) {
-                    custom_print(&entry)?;
+                    println!("{}", args.format.format_entry(entry)?);
                 }
             }
         },
